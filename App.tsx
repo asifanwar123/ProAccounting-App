@@ -23,9 +23,33 @@ import {
   Info,
   LogIn,
   LogOut,
-  ClipboardList
+  ClipboardList,
+  MoreHorizontal,
+  ArrowRight,
+  Wallet,
+  TrendingUp,
+  CreditCard,
+  AlertCircle
 } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, PieChart as RePieChart, Pie, Cell, LineChart, Line } from 'recharts';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip as RechartsTooltip, 
+  Legend, 
+  ResponsiveContainer, 
+  PieChart as RePieChart, 
+  Pie, 
+  Cell, 
+  LineChart, 
+  Line,
+  AreaChart,
+  Area,
+  RadialBarChart, 
+  RadialBar
+} from 'recharts';
 import { StoreProvider, useStore } from './context/Store';
 import { Account, AccountType, Transaction, JournalEntryLine, AppSettings, User, BackupData } from './types';
 import { CURRENCIES, LANGUAGES, INITIAL_ACCOUNTS } from './constants';
@@ -159,76 +183,304 @@ const getAccountTypeBalance = (transactions: Transaction[], accounts: Account[],
 const Dashboard: React.FC = () => {
   const { accounts, transactions, settings, users } = useStore();
 
+  // --- Statistics Calculation ---
   const totalIncome = getAccountTypeBalance(transactions, accounts, AccountType.INCOME);
   const totalExpenses = getAccountTypeBalance(transactions, accounts, AccountType.EXPENSE);
   const netProfit = totalIncome - totalExpenses;
-  const totalAssets = getAccountTypeBalance(transactions, accounts, AccountType.ASSET);
+  const grossProfitMargin = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : 0;
+  
+  // Outstanding Invoices (Accounts Receivable)
+  const arAccount = accounts.find(a => a.name === 'Accounts Receivable');
+  let outstandingBalance = 0;
+  if (arAccount) {
+     transactions.forEach(t => {
+       t.lines.forEach(l => {
+         if (l.accountId === arAccount.id) outstandingBalance += (l.debit - l.credit);
+       })
+     });
+  }
 
-  const data = [
-    { name: 'Income', value: totalIncome },
-    { name: 'Expenses', value: totalExpenses },
-  ];
+  // --- Chart Data Preparation ---
+  // Last 7 days data
+  const getLast7Days = () => {
+    const dates = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      dates.push(d.toISOString().split('T')[0]);
+    }
+    return dates;
+  };
 
-  const COLORS = ['#10b981', '#ef4444'];
+  const last7Days = getLast7Days();
+  const cashFlowData = last7Days.map(date => {
+    let income = 0;
+    let expense = 0;
+    transactions.filter(t => t.date === date).forEach(t => {
+       t.lines.forEach(l => {
+          const acc = accounts.find(a => a.id === l.accountId);
+          if (acc?.type === AccountType.INCOME) income += (l.credit - l.debit); // Income is credit normal
+          if (acc?.type === AccountType.EXPENSE) expense += (l.debit - l.credit);
+       });
+    });
+    // Visual tweak: if data is empty, mock small values for UI demo if needed, 
+    // but here we render actuals. If actuals are 0, bars are 0.
+    return { date: new Date(date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }), income: income || 0, expense: expense || 0 };
+  });
+
+  // Recent Transactions (Mocking as "Invoices")
+  const recentTransactions = [...transactions]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 4)
+    .map(t => {
+        // Mock status based on arbitrary logic for UI demo
+        const status = t.lines.reduce((acc, l) => acc + l.credit, 0) > 1000 ? 'Completed' : 'Upcoming';
+        return { ...t, status };
+    });
+
+  // Expense Categories for Radial Chart
+  const expenseData = accounts
+    .filter(a => a.type === AccountType.EXPENSE)
+    .map(acc => {
+       const val = getAccountBalance(acc.id, transactions);
+       return { name: acc.name, value: val, fill: '#8884d8' };
+    })
+    .filter(d => d.value > 0)
+    .sort((a,b) => b.value - a.value)
+    .slice(0, 4);
+
+  // Assign specific colors for the UI match
+  const EXPENSE_COLORS = ['#FFBB28', '#FF8042', '#00C49F', '#0088FE'];
+  expenseData.forEach((d, i) => d.fill = EXPENSE_COLORS[i % EXPENSE_COLORS.length]);
+  // Add a "total" placeholder for the gauge background if needed, or rely on RadialBar default
+
+  // Taxable Profit Trend (Area Chart) - Monthly approximation
+  // Mocking curve data based on daily accumulation for smoother visual
+  const profitTrendData = cashFlowData.map(d => ({
+    name: d.date,
+    profit: d.income - d.expense,
+    income: d.income
+  }));
+
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card title="Total Income" className="border-l-4 border-green-500">
-          <p className="text-2xl font-bold">{formatCurrency(totalIncome, settings)}</p>
-        </Card>
-        <Card title="Total Expenses" className="border-l-4 border-red-500">
-          <p className="text-2xl font-bold">{formatCurrency(totalExpenses, settings)}</p>
-        </Card>
-        <Card title="Net Profit" className="border-l-4 border-blue-500">
-           <p className={`text-2xl font-bold ${netProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-             {formatCurrency(netProfit, settings)}
-           </p>
-        </Card>
-        <Card title="Total Assets" className="border-l-4 border-purple-500">
-          <p className="text-2xl font-bold">{formatCurrency(totalAssets, settings)}</p>
-        </Card>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 text-gray-800 dark:text-gray-100 font-sans">
+      
+      {/* --- Left Column (Span 2) --- */}
+      <div className="lg:col-span-2 space-y-8">
+        
+        {/* Cash Flow Card */}
+        <div className="bg-[#1E1B39] text-white rounded-[32px] p-8 relative overflow-hidden shadow-xl">
+           <div className="flex justify-between items-start mb-6">
+              <div>
+                <h3 className="text-lg font-medium text-gray-300 mb-1">Cash Flow</h3>
+                <div className="flex items-center gap-2">
+                   <div className="h-2 w-2 rounded-full bg-orange-400"></div>
+                   <span className="text-xs text-gray-400">Income</span>
+                </div>
+                <h2 className="text-4xl font-bold mt-2">{formatCurrency(totalIncome, settings)}</h2>
+              </div>
+              <div className="text-right">
+                 <span className="bg-white/10 px-4 py-2 rounded-full text-sm font-medium">This week</span>
+              </div>
+           </div>
+
+           <div className="h-48 mt-4">
+              <ResponsiveContainer width="100%" height="100%">
+                 <BarChart data={cashFlowData} barGap={8}>
+                    <RechartsTooltip cursor={{fill: 'transparent'}} content={({ active, payload }) => {
+                        if (active && payload && payload.length) {
+                        return (
+                            <div className="bg-slate-800 text-white text-xs p-2 rounded border border-slate-700">
+                                <p>{`${payload[0].payload.date}`}</p>
+                                <p className="text-orange-400">{`Income: ${payload[0].value}`}</p>
+                                <p className="text-slate-400">{`Exp: ${payload[1].value}`}</p>
+                            </div>
+                        );
+                        }
+                        return null;
+                    }} />
+                    <Bar dataKey="expense" fill="#4B4769" radius={[6, 6, 6, 6]} barSize={24} />
+                    <Bar dataKey="income" fill="#FBA94B" radius={[6, 6, 6, 6]} barSize={24} />
+                 </BarChart>
+              </ResponsiveContainer>
+           </div>
+        </div>
+
+        {/* Small KPI Cards Row */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+           {/* Gross Profit Margin */}
+           <div className="bg-white dark:bg-slate-800 p-6 rounded-[32px] shadow-sm flex flex-col justify-between h-40 relative">
+              <div className="flex justify-between items-start">
+                 <span className="text-gray-500 dark:text-gray-400 text-sm font-medium">Gross Profit Margin</span>
+                 <div className="bg-gray-100 dark:bg-slate-700 p-2 rounded-full">
+                    <PieChart size={20} className="text-gray-600 dark:text-gray-300" />
+                 </div>
+              </div>
+              <div>
+                 <h2 className="text-4xl font-bold text-gray-900 dark:text-white">%{grossProfitMargin.toFixed(0)}</h2>
+              </div>
+           </div>
+
+           {/* Outstanding Invoices */}
+           <div className="bg-white dark:bg-slate-800 p-6 rounded-[32px] shadow-sm flex flex-col justify-between h-40">
+              <div className="flex justify-between items-start">
+                 <span className="text-gray-500 dark:text-gray-400 text-sm font-medium">Outstanding Invoices</span>
+                 <div className="bg-gray-100 dark:bg-slate-700 p-2 rounded-full">
+                    <AlertCircle size={20} className="text-gray-600 dark:text-gray-300" />
+                 </div>
+              </div>
+              <div>
+                 <h2 className="text-4xl font-bold text-gray-900 dark:text-white">{formatCurrency(outstandingBalance, settings)}</h2>
+              </div>
+           </div>
+        </div>
+
+        {/* Invoice / Transaction List */}
+        <div className="bg-white dark:bg-slate-800 p-8 rounded-[32px] shadow-sm">
+           <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-bold text-gray-900 dark:text-white">Recent Transactions</h3>
+              <Link to="/accounts/transactions">
+                <button className="bg-[#1E1B39] hover:bg-[#2d2955] text-white px-6 py-3 rounded-xl text-sm font-medium transition-colors">
+                    Create Transaction
+                </button>
+              </Link>
+           </div>
+           
+           <div className="space-y-4">
+              {recentTransactions.map((t, idx) => (
+                  <div key={t.id} className="flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-slate-750 rounded-2xl transition-colors group">
+                      <div className="flex items-center gap-4">
+                          <div className="w-12 h-12 bg-gray-100 dark:bg-slate-700 rounded-full flex items-center justify-center text-gray-500">
+                             <FileText size={20} />
+                          </div>
+                          <div>
+                              <p className="font-bold text-gray-900 dark:text-white text-sm">#{t.id.slice(-6).toUpperCase()}</p>
+                              <p className="text-xs text-gray-500">{t.description}</p>
+                          </div>
+                      </div>
+                      
+                      <div className="hidden sm:block">
+                          <span className={`px-4 py-2 rounded-full text-xs font-bold 
+                            ${t.status === 'Completed' ? 'bg-cyan-100 text-cyan-600' : 
+                              t.status === 'Upcoming' ? 'bg-orange-100 text-orange-500' : 'bg-red-100 text-red-500'}`}>
+                              {t.status || 'Completed'}
+                          </span>
+                      </div>
+
+                      <div className="text-right">
+                          <p className="font-bold text-sm text-gray-900 dark:text-white">{t.date}</p>
+                      </div>
+
+                      <button className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-400">
+                          <ArrowRight size={18} />
+                      </button>
+                  </div>
+              ))}
+              {recentTransactions.length === 0 && <p className="text-center text-gray-500 py-4">No transactions found.</p>}
+           </div>
+        </div>
+
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <Card title="Income vs Expenses">
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={data}>
-                   <CartesianGrid strokeDasharray="3 3" />
-                   <XAxis dataKey="name" />
-                   <YAxis />
-                   <RechartsTooltip formatter={(value: number) => formatCurrency(value, settings)} />
-                   <Bar dataKey="value" fill="#8884d8">
-                      {data.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                   </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+      {/* --- Right Column (Span 1) --- */}
+      <div className="space-y-8">
+         
+         {/* Expenses Radial Chart */}
+         <div className="bg-white dark:bg-slate-800 p-8 rounded-[32px] shadow-sm h-80 flex flex-col">
+            <div className="flex justify-between items-center mb-4">
+               <h3 className="text-xl font-bold">Expenses</h3>
+               <button className="text-gray-400 hover:text-gray-600"><MoreHorizontal size={24}/></button>
             </div>
-          </Card>
-        </div>
-        <div>
-           <Card title="Users List">
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                 {users.map(u => (
-                   <div key={u.id} className="flex items-center justify-between p-2 bg-gray-50 dark:bg-slate-700 rounded">
-                      <div className="flex items-center gap-2">
-                        <Users size={16} />
-                        <div>
-                          <p className="font-medium text-sm">{u.username}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{u.role}</p>
-                        </div>
-                      </div>
-                      <div className="h-2 w-2 rounded-full bg-green-500"></div>
-                   </div>
-                 ))}
-              </div>
-           </Card>
-        </div>
+            
+            <div className="flex-1 relative flex items-center justify-center">
+                <ResponsiveContainer width="100%" height="100%">
+                    <RadialBarChart 
+                        cx="50%" 
+                        cy="50%" 
+                        innerRadius="60%" 
+                        outerRadius="100%" 
+                        barSize={15} 
+                        data={expenseData} 
+                        startAngle={180} 
+                        endAngle={0}
+                    >
+                        <RadialBar
+                            background
+                            dataKey="value"
+                            cornerRadius={10}
+                        />
+                    </RadialBarChart>
+                </ResponsiveContainer>
+                <div className="absolute inset-0 flex flex-col items-center justify-center pt-8">
+                    <span className="text-xs text-gray-500 bg-orange-100 text-orange-600 px-2 py-1 rounded-full mb-1">Total</span>
+                    <span className="text-3xl font-bold">{formatCurrency(totalExpenses, settings)}</span>
+                    <span className="text-xs text-gray-400">All Total</span>
+                </div>
+            </div>
+            {/* Legend Mockup */}
+            <div className="flex justify-center gap-2 mt-2">
+                {expenseData.slice(0, 3).map((e, i) => (
+                    <div key={e.name} className="h-2 w-8 rounded-full" style={{backgroundColor: e.fill}}></div>
+                ))}
+            </div>
+         </div>
+
+         {/* Taxable Profit Area Chart */}
+         <div className="bg-white dark:bg-slate-800 p-8 rounded-[32px] shadow-sm flex flex-col">
+            <div className="flex justify-between items-start mb-6">
+               <div>
+                  <div className="bg-orange-400 w-fit px-3 py-1 rounded-full text-white text-xs font-bold mb-2">
+                      June
+                  </div>
+                  <span className="text-gray-500 text-xs font-medium">Taxable Profit</span>
+                  <h2 className="text-3xl font-bold mt-1">{formatCurrency(netProfit, settings)}</h2>
+               </div>
+               <div className="bg-[#1E1B39] p-2 rounded-full text-white">
+                  <TrendingUp size={20} />
+               </div>
+            </div>
+
+            <div className="h-40 mb-6">
+               <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={profitTrendData}>
+                     <defs>
+                        <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
+                           <stop offset="5%" stopColor="#1E1B39" stopOpacity={0.8}/>
+                           <stop offset="95%" stopColor="#1E1B39" stopOpacity={0}/>
+                        </linearGradient>
+                        <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
+                           <stop offset="5%" stopColor="#FBA94B" stopOpacity={0.8}/>
+                           <stop offset="95%" stopColor="#FBA94B" stopOpacity={0}/>
+                        </linearGradient>
+                     </defs>
+                     <Area type="monotone" dataKey="income" stroke="#FBA94B" fillOpacity={1} fill="url(#colorIncome)" />
+                     <Area type="monotone" dataKey="profit" stroke="#1E1B39" fillOpacity={1} fill="url(#colorProfit)" />
+                  </AreaChart>
+               </ResponsiveContainer>
+            </div>
+
+            {/* Week Days Tabs Mockup */}
+            <div className="flex justify-between text-xs text-gray-400 mb-6">
+                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+                    <span key={i} className={`w-8 h-8 flex items-center justify-center rounded-full ${i === 4 ? 'bg-[#1E1B39] text-white' : ''}`}>{d}</span>
+                ))}
+            </div>
+
+            <div className="space-y-4">
+                <div className="flex justify-between items-center p-3 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-xl">
+                    <span className="text-gray-500 text-sm font-medium">Total Income</span>
+                    <span className="text-gray-900 dark:text-white font-bold">{formatCurrency(totalIncome, settings)}</span>
+                </div>
+                <div className="flex justify-between items-center p-3 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-xl">
+                    <span className="text-gray-500 text-sm font-medium">Total Outcome</span>
+                    <span className="text-gray-900 dark:text-white font-bold">{formatCurrency(totalExpenses, settings)}</span>
+                </div>
+            </div>
+         </div>
+
       </div>
+
     </div>
   );
 };
@@ -313,7 +565,7 @@ const Transactions: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <Card title={editingId ? "Edit Transaction" : "New Transaction"}>
+      <Card title={editingId ? "Edit Transaction" : "New Transaction"} className="no-print">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
            <Input label="Date" type="date" value={date} onChange={e => setDate(e.target.value)} />
            <Input label="Description" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Sold widget" />
@@ -373,50 +625,57 @@ const Transactions: React.FC = () => {
         </div>
       </Card>
 
-      <Card title="All Transactions">
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-700">
-            <thead>
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-slate-700">
-               {[...transactions].sort((a, b) => b.date.localeCompare(a.date)).map(t => (
-                 <tr key={t.id}>
-                   <td className="px-6 py-4 whitespace-nowrap text-sm">{t.date}</td>
-                   <td className="px-6 py-4 whitespace-nowrap text-sm">{t.description}</td>
-                   <td className="px-6 py-4 whitespace-nowrap text-sm text-right">
-                     {formatCurrency(t.lines.reduce((s, l) => s + l.debit, 0), settings)}
-                   </td>
-                   <td className="px-6 py-4 whitespace-nowrap text-sm text-right flex justify-end items-center space-x-2">
-                      <button 
-                        onClick={() => handleEdit(t)} 
-                        className="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
-                        title="Edit Transaction"
-                      >
-                        <Edit2 size={18} />
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(t.id)} 
-                        className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 transition-colors"
-                        title="Delete Transaction"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-                   </td>
-                 </tr>
-               ))}
-               {transactions.length === 0 && (
-                 <tr>
-                   <td colSpan={4} className="px-6 py-4 text-center text-sm text-gray-500">No transactions yet</td>
-                 </tr>
-               )}
-            </tbody>
-          </table>
+      <Card title="All Transactions" action={<button className="p-2 hover:bg-gray-100 rounded" onClick={() => window.print()}><Printer size={20}/></button>}>
+        <div className="print-section p-4 border border-gray-100 rounded">
+            <div className="text-center mb-6 hidden print:block">
+                <h2 className="text-2xl font-bold">{settings.companyName}</h2>
+                <h3 className="text-xl">Transaction Register</h3>
+                <p className="text-sm text-gray-500">As of {new Date().toLocaleDateString()}</p>
+            </div>
+            <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-700">
+                <thead>
+                <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider no-print">Actions</th>
+                </tr>
+                </thead>
+                <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-slate-700">
+                {[...transactions].sort((a, b) => b.date.localeCompare(a.date)).map(t => (
+                    <tr key={t.id}>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">{t.date}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">{t.description}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right">
+                        {formatCurrency(t.lines.reduce((s, l) => s + l.debit, 0), settings)}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-right flex justify-end items-center space-x-2 no-print">
+                        <button 
+                            onClick={() => handleEdit(t)} 
+                            className="text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
+                            title="Edit Transaction"
+                        >
+                            <Edit2 size={18} />
+                        </button>
+                        <button 
+                            onClick={() => handleDelete(t.id)} 
+                            className="text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 transition-colors"
+                            title="Delete Transaction"
+                        >
+                            <Trash2 size={18} />
+                        </button>
+                    </td>
+                    </tr>
+                ))}
+                {transactions.length === 0 && (
+                    <tr>
+                    <td colSpan={4} className="px-6 py-4 text-center text-sm text-gray-500">No transactions yet</td>
+                    </tr>
+                )}
+                </tbody>
+            </table>
+            </div>
         </div>
       </Card>
     </div>
@@ -506,8 +765,8 @@ const ReportsLedger: React.FC = () => {
 
   return (
      <div className="space-y-6">
-        <Card title="Ledger & Activity">
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <Card title="Ledger & Activity" action={<button className="p-2 hover:bg-gray-100 rounded" onClick={() => window.print()}><Printer size={20}/></button>}>
+           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 no-print">
               <Input label="From Date" type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} />
               <Input label="To Date" type="date" value={toDate} onChange={e => setToDate(e.target.value)} />
               <Select label="Account" value={selectedAccount} onChange={e => setSelectedAccount(e.target.value)}>
@@ -516,37 +775,46 @@ const ReportsLedger: React.FC = () => {
               </Select>
            </div>
            
-           <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-700 text-sm">
-                 <thead>
-                    <tr className="bg-gray-50 dark:bg-slate-700">
-                       <th className="px-4 py-2 text-left">Date</th>
-                       <th className="px-4 py-2 text-left">Description</th>
-                       <th className="px-4 py-2 text-left">Account</th>
-                       <th className="px-4 py-2 text-right">Debit</th>
-                       <th className="px-4 py-2 text-right">Credit</th>
-                    </tr>
-                 </thead>
-                 <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
-                    {filteredTransactions.map(t => (
-                       <React.Fragment key={t.id}>
-                          {t.lines.map((l, idx) => {
-                             if (selectedAccount !== 'all' && l.accountId !== selectedAccount) return null;
-                             const accName = accounts.find(a => a.id === l.accountId)?.name || 'Unknown';
-                             return (
-                                <tr key={`${t.id}-${idx}`}>
-                                   <td className="px-4 py-2">{t.date}</td>
-                                   <td className="px-4 py-2">{t.description}</td>
-                                   <td className="px-4 py-2 font-medium">{accName}</td>
-                                   <td className="px-4 py-2 text-right">{l.debit > 0 ? formatCurrency(l.debit, settings) : '-'}</td>
-                                   <td className="px-4 py-2 text-right">{l.credit > 0 ? formatCurrency(l.credit, settings) : '-'}</td>
-                                </tr>
-                             );
-                          })}
-                       </React.Fragment>
-                    ))}
-                 </tbody>
-              </table>
+           <div className="print-section p-4 border border-gray-100 rounded">
+                <div className="text-center mb-6 hidden print:block">
+                    <h2 className="text-2xl font-bold">{settings.companyName}</h2>
+                    <h3 className="text-xl">General Ledger</h3>
+                    <p className="text-sm text-gray-500">
+                        {fromDate && toDate ? `From ${fromDate} to ${toDate}` : 'All Dates'}
+                    </p>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200 dark:divide-slate-700 text-sm">
+                        <thead>
+                            <tr className="bg-gray-50 dark:bg-slate-700">
+                            <th className="px-4 py-2 text-left">Date</th>
+                            <th className="px-4 py-2 text-left">Description</th>
+                            <th className="px-4 py-2 text-left">Account</th>
+                            <th className="px-4 py-2 text-right">Debit</th>
+                            <th className="px-4 py-2 text-right">Credit</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                            {filteredTransactions.map(t => (
+                            <React.Fragment key={t.id}>
+                                {t.lines.map((l, idx) => {
+                                    if (selectedAccount !== 'all' && l.accountId !== selectedAccount) return null;
+                                    const accName = accounts.find(a => a.id === l.accountId)?.name || 'Unknown';
+                                    return (
+                                        <tr key={`${t.id}-${idx}`}>
+                                        <td className="px-4 py-2">{t.date}</td>
+                                        <td className="px-4 py-2">{t.description}</td>
+                                        <td className="px-4 py-2 font-medium">{accName}</td>
+                                        <td className="px-4 py-2 text-right">{l.debit > 0 ? formatCurrency(l.debit, settings) : '-'}</td>
+                                        <td className="px-4 py-2 text-right">{l.credit > 0 ? formatCurrency(l.credit, settings) : '-'}</td>
+                                        </tr>
+                                    );
+                                })}
+                            </React.Fragment>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
            </div>
         </Card>
      </div>
@@ -995,33 +1263,44 @@ const RatioAnalysis: React.FC = () => {
 
     return (
         <div className="space-y-6">
-            <Card title="Ratio Analysis">
+            <Card title="Ratio Analysis" action={<button className="p-2 hover:bg-gray-100 rounded" onClick={() => window.print()}><Printer size={20}/></button>}>
                 <div className="flex gap-4 mb-6 no-print">
                     <Input label="From" type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} />
                     <Input label="To" type="date" value={toDate} onChange={e => setToDate(e.target.value)} />
                 </div>
-                <p className="text-sm text-gray-500 mb-6">Key financial ratios for the selected period.</p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-4">
-                        <h4 className="text-lg font-semibold border-b pb-2">Liquidity Ratios</h4>
-                        <RatioItem title="Current Ratio" value={ratioData.currentRatio} explanation="Measures ability to pay short-term obligations (higher is better). Formula: Current Assets / Current Liabilities" />
-                        <RatioItem title="Quick Ratio" value={ratioData.quickRatio} explanation="A stricter liquidity test (higher is better). Formula: (Current Assets - Inventory) / Current Liabilities" />
-                        
-                        <h4 className="text-lg font-semibold border-b pb-2 pt-4">Solvency Ratios</h4>
-                        <RatioItem title="Debt-to-Assets Ratio" value={ratioData.debtToAssets} format="percent" explanation="Proportion of assets financed by debt (lower is better). Formula: Total Liabilities / Total Assets" />
-                        <RatioItem title="Debt-to-Equity Ratio" value={ratioData.debtToEquity} explanation="Compares creditor financing to owner financing (lower is better). Formula: Total Liabilities / Total Equity" />
-
+                
+                <div className="print-section p-4 border border-gray-100 rounded">
+                    <div className="text-center mb-6 hidden print:block">
+                        <h2 className="text-2xl font-bold">{settings.companyName}</h2>
+                        <h3 className="text-xl">Financial Ratio Analysis</h3>
+                        <p className="text-sm text-gray-500">
+                            {fromDate && toDate ? `From ${fromDate} to ${toDate}` : 'All Dates'}
+                        </p>
                     </div>
-                    <div className="space-y-4">
-                        <h4 className="text-lg font-semibold border-b pb-2">Profitability Ratios</h4>
-                        <RatioItem title="Gross Profit Margin" value={ratioData.grossProfitMargin} format="percent" explanation="Profit made on each sale, before other expenses (higher is better). Formula: (Revenue - COGS) / Revenue" />
-                        <RatioItem title="Net Profit Margin" value={ratioData.netProfitMargin} format="percent" explanation="Overall profitability after all expenses (higher is better). Formula: Net Income / Revenue" />
-                        <RatioItem title="Return on Assets (ROA)" value={ratioData.returnOnAssets} format="percent" explanation="How efficiently assets generate profit (higher is better). Formula: Net Income / Total Assets" />
 
-                        <h4 className="text-lg font-semibold border-b pb-2 pt-4">Efficiency Ratios</h4>
-                        <RatioItem title="Asset Turnover" value={ratioData.assetTurnover} explanation="How efficiently assets generate sales (higher is better). Formula: Revenue / Total Assets" />
-                        <RatioItem title="Inventory Turnover" value={ratioData.inventoryTurnover} explanation="How many times inventory is sold over a period (higher is better). Formula: COGS / Inventory" />
+                    <p className="text-sm text-gray-500 mb-6 no-print">Key financial ratios for the selected period.</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div className="space-y-4">
+                            <h4 className="text-lg font-semibold border-b pb-2">Liquidity Ratios</h4>
+                            <RatioItem title="Current Ratio" value={ratioData.currentRatio} explanation="Measures ability to pay short-term obligations (higher is better). Formula: Current Assets / Current Liabilities" />
+                            <RatioItem title="Quick Ratio" value={ratioData.quickRatio} explanation="A stricter liquidity test (higher is better). Formula: (Current Assets - Inventory) / Current Liabilities" />
+                            
+                            <h4 className="text-lg font-semibold border-b pb-2 pt-4">Solvency Ratios</h4>
+                            <RatioItem title="Debt-to-Assets Ratio" value={ratioData.debtToAssets} format="percent" explanation="Proportion of assets financed by debt (lower is better). Formula: Total Liabilities / Total Assets" />
+                            <RatioItem title="Debt-to-Equity Ratio" value={ratioData.debtToEquity} explanation="Compares creditor financing to owner financing (lower is better). Formula: Total Liabilities / Total Equity" />
 
+                        </div>
+                        <div className="space-y-4">
+                            <h4 className="text-lg font-semibold border-b pb-2">Profitability Ratios</h4>
+                            <RatioItem title="Gross Profit Margin" value={ratioData.grossProfitMargin} format="percent" explanation="Profit made on each sale, before other expenses (higher is better). Formula: (Revenue - COGS) / Revenue" />
+                            <RatioItem title="Net Profit Margin" value={ratioData.netProfitMargin} format="percent" explanation="Overall profitability after all expenses (higher is better). Formula: Net Income / Revenue" />
+                            <RatioItem title="Return on Assets (ROA)" value={ratioData.returnOnAssets} format="percent" explanation="How efficiently assets generate profit (higher is better). Formula: Net Income / Total Assets" />
+
+                            <h4 className="text-lg font-semibold border-b pb-2 pt-4">Efficiency Ratios</h4>
+                            <RatioItem title="Asset Turnover" value={ratioData.assetTurnover} explanation="How efficiently assets generate sales (higher is better). Formula: Revenue / Total Assets" />
+                            <RatioItem title="Inventory Turnover" value={ratioData.inventoryTurnover} explanation="How many times inventory is sold over a period (higher is better). Formula: COGS / Inventory" />
+
+                        </div>
                     </div>
                 </div>
             </Card>
@@ -1165,147 +1444,13 @@ const AgedReceivables: React.FC = () => {
     );
 };
 
-
 const SettingsPage: React.FC = () => {
-  const { settings, updateSettings, users, addUser, deleteUser, resetData, transactions, accounts, restoreData } = useStore();
-  const [newUser, setNewUser] = useState<Partial<User>>({ username: '', email: '', role: 'admin' });
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  // State for Google Drive Integration
-  const [gapiReady, setGapiReady] = useState(false);
-  const [isSignedIn, setIsSignedIn] = useState(false);
-  const [pickerApiLoaded, setPickerApiLoaded] = useState(false);
-  
-  // --- Google Drive API Configuration ---
-  // IMPORTANT: You must get these from Google Cloud Console for your own project.
-  const CLIENT_ID = 'YOUR_CLIENT_ID.apps.googleusercontent.com';
-  const API_KEY = process.env.API_KEY; // This should be a Google Cloud API Key
-  const DISCOVERY_DOCS = ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"];
-  const SCOPES = 'https://www.googleapis.com/auth/drive.file';
-  const FILENAME = 'ProAccountingData.json';
+  const { settings, updateSettings, users, addUser, updateUser, deleteUser, resetData, restoreData } = useStore();
+  const [file, setFile] = useState<File | null>(null);
 
-  useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://accounts.google.com/gsi/client';
-    script.async = true;
-    script.defer = true;
-    document.body.appendChild(script);
-
-    const gapiScript = document.getElementsByTagName('script')[0];
-    if (gapiScript && gapiScript.src === 'https://apis.google.com/js/api.js') {
-        gapiScript.onload = () => {
-            window.gapi.load('client:auth2:picker', () => {
-                setGapiReady(true);
-            });
-        };
-    }
-  }, []);
-
-  useEffect(() => {
-    if (gapiReady) {
-      window.gapi.client.init({
-        apiKey: API_KEY,
-        clientId: CLIENT_ID,
-        discoveryDocs: DISCOVERY_DOCS,
-        scope: SCOPES,
-      }).then(() => {
-        const authInstance = window.gapi.auth2.getAuthInstance();
-        setIsSignedIn(authInstance.isSignedIn.get());
-        authInstance.isSignedIn.listen(setIsSignedIn);
-      });
-    }
-  }, [gapiReady]);
-
-  const handleAuthClick = () => {
-    window.gapi.auth2.getAuthInstance().signIn();
-  };
-
-  const handleSignoutClick = () => {
-    window.gapi.auth2.getAuthInstance().signOut();
-  };
-
-  const findFile = async () => {
-      const response = await window.gapi.client.drive.files.list({
-          q: `name='${FILENAME}' and trashed=false`,
-          fields: 'files(id, name)',
-          spaces: 'drive'
-      });
-      if (response.result.files.length > 0) {
-          return response.result.files[0].id;
-      }
-      return null;
-  };
-
-  const handleSaveToDrive = async () => {
-    const fileId = await findFile();
-    const data = JSON.stringify({ accounts, transactions, settings, users });
-    const blob = new Blob([data], { type: 'application/json' });
-    
-    const form = new FormData();
-    form.append('metadata', new Blob([JSON.stringify({ name: FILENAME })], { type: 'application/json' }));
-    form.append('file', blob);
-    
-    let url = 'https://www.googleapis.com/upload/drive/v3/files';
-    let method = 'POST';
-
-    if(fileId) {
-        url = `https://www.googleapis.com/upload/drive/v3/files/${fileId}`;
-        method = 'PATCH';
-    }
-
-    const res = await fetch(`${url}?uploadType=multipart`, {
-        method,
-        headers: new Headers({ 'Authorization': 'Bearer ' + window.gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().access_token }),
-        body: form,
-    });
-    
-    if (res.ok) {
-        alert('Data saved successfully to Google Drive!');
-    } else {
-        alert('Error saving data to Google Drive.');
-    }
-  };
-
-  const handleLoadFromDrive = async () => {
-    const fileId = await findFile();
-    if (!fileId) {
-        alert('No backup file found in Google Drive.');
-        return;
-    }
-    const response = await window.gapi.client.drive.files.get({
-        fileId: fileId,
-        alt: 'media'
-    });
-    
-    if (response.body) {
-        if(restoreData(response.body)){
-            alert('Data loaded successfully from Google Drive!');
-        } else {
-            alert('Failed to parse data from Google Drive.');
-        }
-    } else {
-        alert('Could not load data from file.');
-    }
-  };
-
-
-  const handleAddUser = () => {
-    if (newUser.username && newUser.email) {
-      addUser({ id: Date.now().toString(), username: newUser.username, email: newUser.email, role: 'admin' } as User);
-      setNewUser({ username: '', email: '', role: 'admin' });
-    }
-  };
-
-  const handleBackup = () => {
-    const backupData: BackupData = {
-        appVersion: '1.2.0',
-        exportDate: new Date().toISOString(),
-        accounts,
-        transactions,
-        settings,
-        users
-    };
-    const data = JSON.stringify(backupData, null, 2);
+  const handleExport = () => {
+    const data = localStorage.getItem('proAccountingData');
+    if (!data) return;
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1314,274 +1459,199 @@ const SettingsPage: React.FC = () => {
     a.click();
   };
 
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const handleImport = async () => {
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const content = e.target?.result as string;
-        if (content) {
-            if (restoreData(content)) {
-                alert('Data imported successfully!');
-            } else {
-                alert('Failed to import data. Invalid file format.');
-            }
-        }
-    };
-    reader.readAsText(file);
-    // Reset input so same file can be selected again if needed
-    event.target.value = '';
+    const text = await file.text();
+    if (restoreData(text)) {
+      alert('Data restored successfully!');
+      window.location.reload();
+    } else {
+      alert('Invalid backup file');
+    }
   };
 
   return (
-    <div className="space-y-8">
-      <Card title="Company Profile & Preferences">
+    <div className="space-y-6">
+      <Card title="General Settings">
          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input label="Company Name" value={settings.companyName} onChange={e => updateSettings({...settings, companyName: e.target.value})} />
-            <Input label="Tax Rate (%)" type="number" value={settings.taxRate} onChange={e => updateSettings({...settings, taxRate: parseFloat(e.target.value)})} />
-            <Select label="Language" value={settings.language} onChange={e => updateSettings({...settings, language: e.target.value})}>
-               {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
-            </Select>
             <Select label="Currency" value={settings.currency} onChange={e => {
-               const curr = CURRENCIES.find(c => c.code === e.target.value);
-               updateSettings({...settings, currency: e.target.value, currencySign: curr?.sign || '$'});
+                const c = CURRENCIES.find(c => c.code === e.target.value);
+                updateSettings({...settings, currency: e.target.value, currencySign: c?.sign || '$'});
             }}>
                {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.name} ({c.sign})</option>)}
             </Select>
-            <div className="flex items-center gap-2 pt-6">
-              <input type="checkbox" checked={settings.showCurrencySign} onChange={e => updateSettings({...settings, showCurrencySign: e.target.checked})} className="h-4 w-4" />
-              <label>Show Currency Sign</label>
-            </div>
-            <div className="flex items-center gap-2 pt-6">
-              <input type="checkbox" checked={settings.theme === 'dark'} onChange={e => updateSettings({...settings, theme: e.target.checked ? 'dark' : 'light'})} className="h-4 w-4" />
-              <label>Dark Mode</label>
-            </div>
+            <Select label="Language" value={settings.language} onChange={e => updateSettings({...settings, language: e.target.value})}>
+               {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+            </Select>
+            <Select label="Theme" value={settings.theme} onChange={e => updateSettings({...settings, theme: e.target.value as 'light'|'dark'})}>
+               <option value="light">Light</option>
+               <option value="dark">Dark</option>
+            </Select>
          </div>
-      </Card>
-
-      <Card title="Cloud Backup (Google Drive)">
-          <div className="text-sm text-gray-600 dark:text-gray-300">
-            <p className="mb-4">Save your data to Google Drive for backup and access across devices. You will need to get your own Google Client ID from the Google Cloud Console.</p>
-            {!gapiReady && <p>Loading Google Services...</p>}
-            {gapiReady && !isSignedIn && (
-                <Button onClick={handleAuthClick} className="flex items-center gap-2">
-                    <LogIn size={16} /> Connect to Google Drive
-                </Button>
-            )}
-            {gapiReady && isSignedIn && (
-                <div className="space-y-3">
-                  <p className="text-green-600 font-medium">Successfully connected to Google Drive.</p>
-                  <div className="flex gap-4">
-                      <Button onClick={handleSaveToDrive} variant="primary" className="flex items-center gap-2">
-                          <Upload size={16} /> Save to Drive
-                      </Button>
-                      <Button onClick={handleLoadFromDrive} variant="secondary" className="flex items-center gap-2">
-                          <Download size={16} /> Load from Drive
-                      </Button>
-                      <Button onClick={handleSignoutClick} variant="danger" className="flex items-center gap-2">
-                          <LogOut size={16} /> Sign Out
-                      </Button>
-                  </div>
-                </div>
-            )}
-          </div>
       </Card>
       
-      <Card title="Admin Panel - Users">
-        <div className="flex gap-2 mb-4 items-end">
-           <Input label="Username" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} />
-           <Input label="Email" value={newUser.email} onChange={e => setNewUser({...newUser, email: e.target.value})} />
-           <div className="mb-3">
-             <Button onClick={handleAddUser}>Add User</Button>
-           </div>
-        </div>
-        <ul className="divide-y divide-y-gray-200 dark:divide-slate-700">
-           {users.map(u => (
-             <li key={u.id} className="py-2 flex justify-between items-center">
-               <span>{u.username} ({u.email})</span>
-               {u.username !== 'admin' && <button onClick={() => deleteUser(u.id)} className="text-red-500"><Trash2 size={16}/></button>}
-             </li>
-           ))}
-        </ul>
-      </Card>
-
-      <Card title="Data Management (Import/Export)">
-         <div className="flex flex-wrap gap-4">
-            <Button onClick={handleBackup} className="flex items-center gap-2">
-                <Download size={16} /> Export Data (JSON)
-            </Button>
-            
-            <input 
-                type="file" 
-                ref={fileInputRef} 
-                onChange={handleFileChange} 
-                className="hidden" 
-                accept=".json"
-            />
-            <Button onClick={handleImportClick} variant="secondary" className="flex items-center gap-2">
-                <Upload size={16} /> Import Data (JSON)
-            </Button>
-
-            <Button onClick={() => { if(confirm('Are you sure? This will clear all data.')) resetData(); }} variant="danger" className="flex items-center gap-2">
-                <Trash2 size={16} /> Reset All Data
-            </Button>
+      <Card title="Data Management">
+         <div className="space-y-4">
+            <div className="flex items-center gap-4">
+               <Button onClick={handleExport} variant="secondary" className="flex items-center gap-2"><Download size={16}/> Export Backup</Button>
+            </div>
+            <div className="flex items-center gap-4">
+               <input type="file" accept=".json" onChange={e => setFile(e.target.files?.[0] || null)} className="text-sm text-gray-500" />
+               <Button onClick={handleImport} disabled={!file} variant="secondary" className="flex items-center gap-2"><Upload size={16}/> Restore Data</Button>
+            </div>
+            <div className="pt-4 border-t">
+               <Button onClick={() => {if(confirm('Reset all data? This cannot be undone.')) resetData()}} variant="danger">Reset Application Data</Button>
+            </div>
          </div>
-         <p className="text-xs text-gray-500 mt-2">
-            Export creates a JSON file of your data. Import restores data from a previously exported JSON file.
-         </p>
       </Card>
-
-       <Card title="Contact & Help">
-          <div className="space-y-2">
-            <p><strong>Contact Us:</strong> support@proaccounting.com</p>
-            <p><strong>WhatsApp:</strong> +923026834300</p>
-          </div>
-       </Card>
     </div>
   );
 };
 
-// --- Layout & Navigation ---
+const SidebarItem: React.FC<{ to: string; icon: React.ReactNode; label: string; active: boolean; onClick?: () => void }> = ({ to, icon, label, active, onClick }) => (
+  <Link to={to} onClick={onClick} className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors ${active ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+    {icon}
+    <span className="font-medium">{label}</span>
+  </Link>
+);
 
-const SidebarItem: React.FC<{ icon: any; label: string; to?: string; children?: React.ReactNode; isOpen?: boolean; onClick?: () => void }> = ({ icon: Icon, label, to, children, isOpen, onClick }) => {
-  const location = useLocation();
-  const active = to && location.pathname === to;
-  
-  return (
-    <div className="mb-1">
-      {to ? (
-        <Link to={to} className={`flex items-center px-4 py-2 text-sm font-medium rounded-md transition-colors ${active ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-100' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-slate-700'}`}>
-           <Icon size={18} className="mr-3" />
-           {label}
-        </Link>
-      ) : (
-        <button onClick={onClick} className="w-full flex items-center justify-between px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-slate-700 rounded-md">
-           <div className="flex items-center">
-             <Icon size={18} className="mr-3" />
-             {label}
-           </div>
-           {isOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        </button>
-      )}
-      {isOpen && children && (
-        <div className="ml-8 mt-1 space-y-1 border-l-2 border-gray-200 dark:border-slate-700 pl-2">
-           {children}
+const AppContent: React.FC = () => {
+    const { settings } = useStore();
+    const location = useLocation();
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+    const [reportsOpen, setReportsOpen] = useState(false);
+
+    // Close sidebar on route change on mobile
+    useEffect(() => {
+        setSidebarOpen(false);
+    }, [location]);
+
+    const isActive = (path: string) => location.pathname === path;
+
+    return (
+        <div className="flex h-screen bg-gray-100 dark:bg-slate-900 transition-colors duration-200 font-sans">
+             {/* Mobile Sidebar Overlay */}
+             {sidebarOpen && <div className="fixed inset-0 bg-black/50 z-20 lg:hidden" onClick={() => setSidebarOpen(false)}></div>}
+
+             {/* Sidebar */}
+             <aside className={`fixed lg:static inset-y-0 left-0 w-64 bg-slate-900 text-white transform transition-transform duration-200 z-30 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'} flex flex-col`}>
+                <div className="p-6 border-b border-slate-800 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                           <FileText size={20} className="text-white" />
+                        </div>
+                        <h1 className="font-bold text-xl tracking-tight">Pro Books</h1>
+                    </div>
+                    <button onClick={() => setSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-white">
+                        <X size={24} />
+                    </button>
+                </div>
+                
+                <nav className="flex-1 overflow-y-auto p-4 space-y-1">
+                    <SidebarItem to="/" icon={<LayoutDashboard size={20} />} label="Dashboard" active={isActive('/')} />
+                    <SidebarItem to="/transactions" icon={<BookOpen size={20} />} label="Transactions" active={isActive('/transactions')} />
+                    <SidebarItem to="/accounts" icon={<ClipboardList size={20} />} label="Chart of Accounts" active={isActive('/accounts')} />
+                    
+                    <div className="pt-4 pb-2 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Reports</div>
+                    <button onClick={() => setReportsOpen(!reportsOpen)} className={`w-full flex items-center justify-between px-4 py-3 rounded-md transition-colors ${location.pathname.startsWith('/reports') ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+                        <div className="flex items-center gap-3">
+                           <PieChart size={20} />
+                           <span className="font-medium">Financial Reports</span>
+                        </div>
+                        {reportsOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
+                    {reportsOpen && (
+                        <div className="pl-12 space-y-1 mt-1">
+                            <Link to="/reports/ledger" className={`block py-2 text-sm ${isActive('/reports/ledger') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>General Ledger</Link>
+                            <Link to="/reports/trial-balance" className={`block py-2 text-sm ${isActive('/reports/trial-balance') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>Trial Balance</Link>
+                            <Link to="/reports/income" className={`block py-2 text-sm ${isActive('/reports/income') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>Income Statement</Link>
+                            <Link to="/reports/balance" className={`block py-2 text-sm ${isActive('/reports/balance') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>Balance Sheet</Link>
+                            <Link to="/reports/cashflow" className={`block py-2 text-sm ${isActive('/reports/cashflow') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>Cash Flow</Link>
+                            <Link to="/reports/ratios" className={`block py-2 text-sm ${isActive('/reports/ratios') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>Ratio Analysis</Link>
+                            <Link to="/reports/aging" className={`block py-2 text-sm ${isActive('/reports/aging') ? 'text-blue-400' : 'text-slate-400 hover:text-white'}`}>Aged Receivables</Link>
+                        </div>
+                    )}
+
+                    <div className="pt-4 pb-2 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">System</div>
+                    <SidebarItem to="/settings" icon={<Settings size={20} />} label="Settings" active={isActive('/settings')} />
+                </nav>
+
+                <div className="p-4 border-t border-slate-800">
+                    <div className="flex items-center gap-3 px-2">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-xs font-bold">
+                            AD
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-white truncate">Administrator</p>
+                            <p className="text-xs text-slate-500 truncate">admin@company.com</p>
+                        </div>
+                    </div>
+                </div>
+             </aside>
+
+             {/* Main Content */}
+             <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+                {/* Header */}
+                <header className="bg-white dark:bg-slate-800 shadow-sm z-10">
+                    <div className="px-6 py-4 flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                             <button onClick={() => setSidebarOpen(true)} className="lg:hidden text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                                 <Menu size={24} />
+                             </button>
+                             <h2 className="text-xl font-semibold text-gray-800 dark:text-white">
+                                {location.pathname === '/' ? 'Dashboard' : 
+                                 location.pathname.startsWith('/reports') ? 'Financial Reports' :
+                                 location.pathname.replace('/', '').split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')}
+                             </h2>
+                        </div>
+                        <div className="flex items-center gap-4">
+                             <div className="hidden md:block text-right">
+                                 <p className="text-sm font-medium text-gray-900 dark:text-white">{settings.companyName}</p>
+                                 <p className="text-xs text-gray-500 dark:text-gray-400">{new Date().toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                             </div>
+                        </div>
+                    </div>
+                </header>
+
+                {/* Content Area */}
+                <div className="flex-1 overflow-auto p-6 scroll-smooth">
+                    <Routes>
+                        <Route path="/" element={<Dashboard />} />
+                        <Route path="/transactions" element={<Transactions />} />
+                        <Route path="/accounts" element={<ChartOfAccounts />} />
+                        <Route path="/reports/ledger" element={<ReportsLedger />} />
+                        <Route path="/reports/trial-balance" element={<FinancialStatements type="trial" />} />
+                        <Route path="/reports/income" element={<FinancialStatements type="income" />} />
+                        <Route path="/reports/balance" element={<FinancialStatements type="balance" />} />
+                        <Route path="/reports/cashflow" element={<CashFlowStatement />} />
+                        <Route path="/reports/ratios" element={<RatioAnalysis />} />
+                        <Route path="/reports/aging" element={<AgedReceivables />} />
+                        <Route path="/settings" element={<SettingsPage />} />
+                        <Route path="*" element={<Navigate to="/" replace />} />
+                    </Routes>
+                    
+                    <footer className="mt-8 pt-8 border-t border-gray-200 dark:border-slate-700 text-center text-sm text-gray-500 dark:text-gray-400 pb-4">
+                        &copy; {new Date().getFullYear()} Pro Accounting Software. All rights reserved.
+                    </footer>
+                </div>
+             </main>
         </div>
-      )}
-    </div>
-  );
+    );
 };
-
-const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({ accounts: true, reports: true, settings: false });
-  const { settings } = useStore();
-
-  const toggleMenu = (menu: string) => setOpenMenus(prev => ({ ...prev, [menu]: !prev[menu] }));
-
-  return (
-    <div className="min-h-screen bg-gray-100 dark:bg-slate-900 flex flex-col transition-colors duration-200">
-      {/* Header */}
-      <header className="bg-white dark:bg-slate-800 shadow-sm z-10">
-        <div className="flex items-center justify-between px-4 py-3">
-           <div className="flex items-center">
-             <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 rounded-md hover:bg-gray-100 dark:hover:bg-slate-700 lg:hidden">
-                <Menu size={24} className="text-gray-600 dark:text-gray-200" />
-             </button>
-             <div className="ml-4 flex items-center gap-2">
-                <div className="bg-blue-600 text-white p-2 rounded-lg"><FileText size={20} /></div>
-                <h1 className="text-xl font-bold text-gray-800 dark:text-white hidden sm:block">Pro Accounting <span className="text-xs font-normal text-gray-500">v1.2.0</span></h1>
-             </div>
-           </div>
-           <div className="flex items-center space-x-4">
-              <span className="text-sm font-medium text-gray-600 dark:text-gray-300">{settings.companyName}</span>
-              <div className="h-8 w-8 bg-blue-500 rounded-full flex items-center justify-center text-white font-bold">A</div>
-           </div>
-        </div>
-      </header>
-
-      <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className={`${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} fixed lg:relative lg:translate-x-0 z-20 w-64 h-full bg-white dark:bg-slate-800 border-r border-gray-200 dark:border-slate-700 transition-transform duration-300 ease-in-out overflow-y-auto pb-20`}>
-           <div className="p-4 space-y-1">
-              <SidebarItem icon={LayoutDashboard} label="Dashboard" to="/" />
-              
-              <SidebarItem icon={BookOpen} label="Accounts" isOpen={openMenus.accounts} onClick={() => toggleMenu('accounts')}>
-                 <SidebarItem icon={FileText} label="Chart of Accounts" to="/accounts/chart" />
-                 <SidebarItem icon={Plus} label="Transactions" to="/accounts/transactions" />
-              </SidebarItem>
-
-              <SidebarItem icon={ClipboardList} label="Reports" isOpen={openMenus.reports} onClick={() => toggleMenu('reports')}>
-                 <SidebarItem icon={Search} label="Ledger" to="/reports/ledger" />
-                 <SidebarItem icon={FileText} label="Trial Balance" to="/reports/trial-balance" />
-                 <SidebarItem icon={FileText} label="Balance Sheet" to="/reports/balance-sheet" />
-                 <SidebarItem icon={FileText} label="Income Statement" to="/reports/income-statement" />
-                 <SidebarItem icon={FileText} label="Cash Flow Statement" to="/reports/cash-flow" />
-                 <SidebarItem icon={FileText} label="Ratio Analysis" to="/reports/ratio-analysis" />
-                 <SidebarItem icon={Users} label="Aged Receivables" to="/reports/aged-receivables" />
-              </SidebarItem>
-
-              <SidebarItem icon={Settings} label="Settings" isOpen={openMenus.settings} onClick={() => toggleMenu('settings')}>
-                 <SidebarItem icon={Settings} label="Admin & App" to="/settings" />
-              </SidebarItem>
-              
-              <SidebarItem icon={HelpCircle} label="Help" to="/settings" />
-           </div>
-        </aside>
-
-        {/* Main Content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-8 pb-20">
-           {children}
-        </main>
-      </div>
-
-      {/* Footer */}
-      <footer className="bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-slate-700 py-3 px-6 text-center text-sm text-gray-500 dark:text-gray-400 fixed bottom-0 w-full z-30">
-        Developed by asifanwar.online | For quick response WhatsApp: +923026834300
-      </footer>
-    </div>
-  );
-};
-
-declare global {
-  interface Window {
-    gapi: any;
-  }
-}
 
 const App: React.FC = () => {
-  const [showSplash, setShowSplash] = useState(true);
+    const [loading, setLoading] = useState(true);
 
-  return (
-    <StoreProvider>
-      {showSplash && <SplashScreen onFinish={() => setShowSplash(false)} />}
-      <HashRouter>
-        <Layout>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/accounts/chart" element={<ChartOfAccounts />} />
-            <Route path="/accounts/transactions" element={<Transactions />} />
-            
-            <Route path="/reports/ledger" element={<ReportsLedger />} />
-            <Route path="/reports/trial-balance" element={<FinancialStatements type="trial" />} />
-            <Route path="/reports/balance-sheet" element={<FinancialStatements type="balance" />} />
-            <Route path="/reports/income-statement" element={<FinancialStatements type="income" />} />
-            <Route path="/reports/cash-flow" element={<CashFlowStatement />} />
-            <Route path="/reports/ratio-analysis" element={<RatioAnalysis />} />
-            <Route path="/reports/aged-receivables" element={<AgedReceivables />} />
-
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Layout>
-      </HashRouter>
-    </StoreProvider>
-  );
+    return (
+        <StoreProvider>
+            {loading ? <SplashScreen onFinish={() => setLoading(false)} /> : (
+                <HashRouter>
+                    <AppContent />
+                </HashRouter>
+            )}
+        </StoreProvider>
+    );
 };
 
 export default App;

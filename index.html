@@ -19,6 +19,44 @@
         }
       }
     </script>
+    <style>
+      @media print {
+        /* Hide everything by default */
+        body * {
+          visibility: hidden;
+        }
+
+        /* Display only the print section */
+        .print-section, .print-section * {
+          visibility: visible;
+        }
+
+        /* Position the print section at the top-left to fill the page */
+        .print-section {
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          margin: 0;
+          padding: 20px; /* Optional: Add some padding for the paper edge */
+          background: white;
+          border: none !important;
+          box-shadow: none !important;
+          z-index: 9999;
+        }
+
+        /* Hide specific elements within the print section if needed (like scrollbars) */
+        ::-webkit-scrollbar {
+          display: none;
+        }
+        
+        /* Ensure background graphics (like chart colors) are printed */
+        body {
+          -webkit-print-color-adjust: exact;
+          print-color-adjust: exact;
+        }
+      }
+    </style>
   <script type="importmap">
 {
   "imports": {
