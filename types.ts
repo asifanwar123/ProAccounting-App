@@ -55,3 +55,12 @@ export interface FinancialSummary {
   totalExpenses: number;
   netIncome: number;
 }
+
+export interface BackupData {
+  appVersion: string;
+  exportDate: string;
+  accounts: Account[];
+  transactions: Transaction[];
+  settings: AppSettings;
+  users: User[];
+}

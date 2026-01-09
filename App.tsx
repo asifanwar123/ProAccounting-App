@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { HashRouter, Routes, Route, Navigate, useLocation, Link } from 'react-router-dom';
 import { 
   LayoutDashboard, 
@@ -20,11 +20,14 @@ import {
   Search,
   Download,
   Upload,
-  Info
+  Info,
+  LogIn,
+  LogOut,
+  ClipboardList
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer, PieChart as RePieChart, Pie, Cell, LineChart, Line } from 'recharts';
 import { StoreProvider, useStore } from './context/Store';
-import { Account, AccountType, Transaction, JournalEntryLine, AppSettings, User } from './types';
+import { Account, AccountType, Transaction, JournalEntryLine, AppSettings, User, BackupData } from './types';
 import { CURRENCIES, LANGUAGES, INITIAL_ACCOUNTS } from './constants';
 
 // --- Helper Components ---
@@ -70,6 +73,38 @@ const Select: React.FC<React.SelectHTMLAttributes<HTMLSelectElement> & { label?:
     </select>
   </div>
 );
+
+const SplashScreen: React.FC<{ onFinish: () => void }> = ({ onFinish }) => {
+  const [fading, setFading] = useState(false);
+
+  useEffect(() => {
+    // Hold splash screen for 2 seconds, then fade out
+    const timer1 = setTimeout(() => setFading(true), 2000);
+    // Unmount after fade transition (duration-700 = 700ms)
+    const timer2 = setTimeout(onFinish, 2700);
+
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+    };
+  }, [onFinish]);
+
+  return (
+    <div className={`fixed inset-0 z-[100] flex flex-col items-center justify-center bg-gray-50 dark:bg-slate-950 transition-opacity duration-700 ease-in-out ${fading ? 'opacity-0' : 'opacity-100'}`}>
+      <div className="flex flex-col items-center scale-100 transition-transform duration-700">
+        <div className="w-24 h-24 bg-gradient-to-br from-blue-500 to-blue-700 rounded-[22px] flex items-center justify-center shadow-2xl mb-8 transform hover:scale-105 transition-transform">
+           <FileText size={48} className="text-white drop-shadow-md" />
+        </div>
+        <h1 className="text-3xl font-semibold text-slate-900 dark:text-white tracking-tight mb-2 font-sans">Pro Accounting</h1>
+        <p className="text-slate-500 dark:text-slate-400 text-lg font-light tracking-wide">Professional. Simple. Secure.</p>
+      </div>
+      <div className="absolute bottom-12 flex flex-col items-center gap-2">
+        <div className="w-8 h-8 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
+        <span className="text-slate-400 text-xs mt-4 tracking-widest uppercase">v1.2.0</span>
+      </div>
+    </div>
+  );
+};
 
 const formatCurrency = (amount: number, settings: AppSettings) => {
   const formatted = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(amount);
@@ -994,10 +1029,265 @@ const RatioAnalysis: React.FC = () => {
     );
 };
 
+const AgedReceivables: React.FC = () => {
+    const { accounts, transactions, settings } = useStore();
+    const [reportDate, setReportDate] = useState(new Date().toISOString().split('T')[0]);
+
+    const agedData = useMemo(() => {
+        const arAccount = accounts.find(a => a.name === 'Accounts Receivable');
+        if (!arAccount) return { customers: [], totals: { current: 0, '1-30': 0, '31-60': 0, '61-90': 0, '90+': 0, total: 0 }};
+
+        const customerData: { [key: string]: { balance: number; invoices: { date: string; amount: number }[] } } = {};
+
+        // Simplified customer identification from description
+        const getCustomerName = (desc: string): string => {
+            const match = desc.match(/(to|from|for)\s(.*?)(?:\s|$|:)/i);
+            return match ? match[2].trim() : 'Unknown Customer';
+        };
+        
+        const relevantTransactions = transactions
+            .filter(t => t.date <= reportDate && t.lines.some(l => l.accountId === arAccount.id))
+            .sort((a,b) => a.date.localeCompare(b.date));
+
+        relevantTransactions.forEach(t => {
+            const arLine = t.lines.find(l => l.accountId === arAccount.id);
+            if (!arLine) return;
+
+            const customerName = getCustomerName(t.description);
+            if (!customerData[customerName]) {
+                customerData[customerName] = { balance: 0, invoices: [] };
+            }
+
+            if (arLine.debit > 0) { // Invoice
+                customerData[customerName].invoices.push({ date: t.date, amount: arLine.debit });
+            }
+            if (arLine.credit > 0) { // Payment
+                // Simple FIFO payment application
+                let paymentAmount = arLine.credit;
+                // Oldest invoices are already first due to initial sort
+                for (const invoice of customerData[customerName].invoices) {
+                    if (paymentAmount <= 0) break;
+                    const paidAmount = Math.min(invoice.amount, paymentAmount);
+                    invoice.amount -= paidAmount;
+                    paymentAmount -= paidAmount;
+                }
+            }
+        });
+        
+        const reportDateObj = new Date(reportDate);
+        const customers = Object.entries(customerData).map(([name, data]) => {
+            const aging = { current: 0, '1-30': 0, '31-60': 0, '61-90': 0, '90+': 0, total: 0 };
+            data.invoices.forEach(inv => {
+                if (inv.amount <= 0.01) return;
+
+                const invDate = new Date(inv.date);
+                const age = (reportDateObj.getTime() - invDate.getTime()) / (1000 * 3600 * 24);
+
+                if (age < 1) aging.current += inv.amount;
+                else if (age <= 30) aging['1-30'] += inv.amount;
+                else if (age <= 60) aging['31-60'] += inv.amount;
+                else if (age <= 90) aging['61-90'] += inv.amount;
+                else aging['90+'] += inv.amount;
+                aging.total += inv.amount;
+            });
+            return { name, ...aging };
+        }).filter(c => c.total > 0.01);
+
+        const totals = customers.reduce((acc, curr) => {
+            acc.current += curr.current;
+            acc['1-30'] += curr['1-30'];
+            acc['31-60'] += curr['31-60'];
+            acc['61-90'] += curr['61-90'];
+            acc['90+'] += curr['90+'];
+            acc.total += curr.total;
+            return acc;
+        }, { current: 0, '1-30': 0, '31-60': 0, '61-90': 0, '90+': 0, total: 0 });
+
+        return { customers, totals };
+
+    }, [accounts, transactions, reportDate]);
+
+    return (
+        <Card title="Aged Receivables Summary" action={<button className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded" onClick={() => window.print()}><Printer size={20}/></button>}>
+            <div className="flex gap-4 mb-6 no-print">
+                <Input label="Aging as of" type="date" value={reportDate} onChange={e => setReportDate(e.target.value)} />
+            </div>
+            <div className="print-section p-4 border border-gray-100 rounded">
+                <div className="text-center mb-6">
+                    <h2 className="text-2xl font-bold">{settings.companyName}</h2>
+                    <h3 className="text-xl">Aged Receivables</h3>
+                    <p className="text-sm text-gray-500">As of {reportDate}</p>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm divide-y divide-gray-200 dark:divide-slate-700">
+                        <thead className="bg-gray-50 dark:bg-slate-700">
+                            <tr>
+                                <th className="px-4 py-2 text-left">Customer</th>
+                                <th className="px-4 py-2 text-right">Current</th>
+                                <th className="px-4 py-2 text-right">1-30 Days</th>
+                                <th className="px-4 py-2 text-right">31-60 Days</th>
+                                <th className="px-4 py-2 text-right">61-90 Days</th>
+                                <th className="px-4 py-2 text-right">90+ Days</th>
+                                <th className="px-4 py-2 text-right">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200 dark:divide-slate-700">
+                            {agedData.customers.map(cust => (
+                                <tr key={cust.name}>
+                                    <td className="px-4 py-2 font-medium">{cust.name}</td>
+                                    <td className="px-4 py-2 text-right">{formatCurrency(cust.current, settings)}</td>
+                                    <td className="px-4 py-2 text-right">{formatCurrency(cust['1-30'], settings)}</td>
+                                    <td className="px-4 py-2 text-right">{formatCurrency(cust['31-60'], settings)}</td>
+                                    <td className="px-4 py-2 text-right">{formatCurrency(cust['61-90'], settings)}</td>
+                                    <td className="px-4 py-2 text-right">{formatCurrency(cust['90+'], settings)}</td>
+                                    <td className="px-4 py-2 text-right font-bold">{formatCurrency(cust.total, settings)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        <tfoot className="bg-gray-100 dark:bg-slate-800 font-bold border-t-2 border-gray-300">
+                            <tr>
+                                <td className="px-4 py-2 text-left">Total</td>
+                                <td className="px-4 py-2 text-right">{formatCurrency(agedData.totals.current, settings)}</td>
+                                <td className="px-4 py-2 text-right">{formatCurrency(agedData.totals['1-30'], settings)}</td>
+                                <td className="px-4 py-2 text-right">{formatCurrency(agedData.totals['31-60'], settings)}</td>
+                                <td className="px-4 py-2 text-right">{formatCurrency(agedData.totals['61-90'], settings)}</td>
+                                <td className="px-4 py-2 text-right">{formatCurrency(agedData.totals['90+'], settings)}</td>
+                                <td className="px-4 py-2 text-right">{formatCurrency(agedData.totals.total, settings)}</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                 {agedData.customers.length === 0 && (
+                   <p className="text-center py-8 text-gray-500">No outstanding receivables for the selected date.</p>
+                 )}
+            </div>
+        </Card>
+    );
+};
+
 
 const SettingsPage: React.FC = () => {
-  const { settings, updateSettings, users, addUser, deleteUser, resetData, transactions, accounts } = useStore();
+  const { settings, updateSettings, users, addUser, deleteUser, resetData, transactions, accounts, restoreData } = useStore();
   const [newUser, setNewUser] = useState<Partial<User>>({ username: '', email: '', role: 'admin' });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // State for Google Drive Integration
+  const [gapiReady, setGapiReady] = useState(false);
+  const [isSignedIn, setIsSignedIn] = useState(false);
+  const [pickerApiLoaded, setPickerApiLoaded] = useState(false);
+  
+  // --- Google Drive API Configuration ---
+  // IMPORTANT: You must get these from Google Cloud Console for your own project.
+  const CLIENT_ID = 'YOUR_CLIENT_ID.apps.googleusercontent.com';
+  const API_KEY = process.env.API_KEY; // This should be a Google Cloud API Key
+  const DISCOVERY_DOCS = ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"];
+  const SCOPES = 'https://www.googleapis.com/auth/drive.file';
+  const FILENAME = 'ProAccountingData.json';
+
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+
+    const gapiScript = document.getElementsByTagName('script')[0];
+    if (gapiScript && gapiScript.src === 'https://apis.google.com/js/api.js') {
+        gapiScript.onload = () => {
+            window.gapi.load('client:auth2:picker', () => {
+                setGapiReady(true);
+            });
+        };
+    }
+  }, []);
+
+  useEffect(() => {
+    if (gapiReady) {
+      window.gapi.client.init({
+        apiKey: API_KEY,
+        clientId: CLIENT_ID,
+        discoveryDocs: DISCOVERY_DOCS,
+        scope: SCOPES,
+      }).then(() => {
+        const authInstance = window.gapi.auth2.getAuthInstance();
+        setIsSignedIn(authInstance.isSignedIn.get());
+        authInstance.isSignedIn.listen(setIsSignedIn);
+      });
+    }
+  }, [gapiReady]);
+
+  const handleAuthClick = () => {
+    window.gapi.auth2.getAuthInstance().signIn();
+  };
+
+  const handleSignoutClick = () => {
+    window.gapi.auth2.getAuthInstance().signOut();
+  };
+
+  const findFile = async () => {
+      const response = await window.gapi.client.drive.files.list({
+          q: `name='${FILENAME}' and trashed=false`,
+          fields: 'files(id, name)',
+          spaces: 'drive'
+      });
+      if (response.result.files.length > 0) {
+          return response.result.files[0].id;
+      }
+      return null;
+  };
+
+  const handleSaveToDrive = async () => {
+    const fileId = await findFile();
+    const data = JSON.stringify({ accounts, transactions, settings, users });
+    const blob = new Blob([data], { type: 'application/json' });
+    
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify({ name: FILENAME })], { type: 'application/json' }));
+    form.append('file', blob);
+    
+    let url = 'https://www.googleapis.com/upload/drive/v3/files';
+    let method = 'POST';
+
+    if(fileId) {
+        url = `https://www.googleapis.com/upload/drive/v3/files/${fileId}`;
+        method = 'PATCH';
+    }
+
+    const res = await fetch(`${url}?uploadType=multipart`, {
+        method,
+        headers: new Headers({ 'Authorization': 'Bearer ' + window.gapi.auth2.getAuthInstance().currentUser.get().getAuthResponse().access_token }),
+        body: form,
+    });
+    
+    if (res.ok) {
+        alert('Data saved successfully to Google Drive!');
+    } else {
+        alert('Error saving data to Google Drive.');
+    }
+  };
+
+  const handleLoadFromDrive = async () => {
+    const fileId = await findFile();
+    if (!fileId) {
+        alert('No backup file found in Google Drive.');
+        return;
+    }
+    const response = await window.gapi.client.drive.files.get({
+        fileId: fileId,
+        alt: 'media'
+    });
+    
+    if (response.body) {
+        if(restoreData(response.body)){
+            alert('Data loaded successfully from Google Drive!');
+        } else {
+            alert('Failed to parse data from Google Drive.');
+        }
+    } else {
+        alert('Could not load data from file.');
+    }
+  };
+
 
   const handleAddUser = () => {
     if (newUser.username && newUser.email) {
@@ -1007,13 +1297,45 @@ const SettingsPage: React.FC = () => {
   };
 
   const handleBackup = () => {
-    const data = JSON.stringify({ accounts, transactions, settings, users });
+    const backupData: BackupData = {
+        appVersion: '1.2.0',
+        exportDate: new Date().toISOString(),
+        accounts,
+        transactions,
+        settings,
+        users
+    };
+    const data = JSON.stringify(backupData, null, 2);
     const blob = new Blob([data], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `backup-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
+  };
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const content = e.target?.result as string;
+        if (content) {
+            if (restoreData(content)) {
+                alert('Data imported successfully!');
+            } else {
+                alert('Failed to import data. Invalid file format.');
+            }
+        }
+    };
+    reader.readAsText(file);
+    // Reset input so same file can be selected again if needed
+    event.target.value = '';
   };
 
   return (
@@ -1042,6 +1364,34 @@ const SettingsPage: React.FC = () => {
          </div>
       </Card>
 
+      <Card title="Cloud Backup (Google Drive)">
+          <div className="text-sm text-gray-600 dark:text-gray-300">
+            <p className="mb-4">Save your data to Google Drive for backup and access across devices. You will need to get your own Google Client ID from the Google Cloud Console.</p>
+            {!gapiReady && <p>Loading Google Services...</p>}
+            {gapiReady && !isSignedIn && (
+                <Button onClick={handleAuthClick} className="flex items-center gap-2">
+                    <LogIn size={16} /> Connect to Google Drive
+                </Button>
+            )}
+            {gapiReady && isSignedIn && (
+                <div className="space-y-3">
+                  <p className="text-green-600 font-medium">Successfully connected to Google Drive.</p>
+                  <div className="flex gap-4">
+                      <Button onClick={handleSaveToDrive} variant="primary" className="flex items-center gap-2">
+                          <Upload size={16} /> Save to Drive
+                      </Button>
+                      <Button onClick={handleLoadFromDrive} variant="secondary" className="flex items-center gap-2">
+                          <Download size={16} /> Load from Drive
+                      </Button>
+                      <Button onClick={handleSignoutClick} variant="danger" className="flex items-center gap-2">
+                          <LogOut size={16} /> Sign Out
+                      </Button>
+                  </div>
+                </div>
+            )}
+          </div>
+      </Card>
+      
       <Card title="Admin Panel - Users">
         <div className="flex gap-2 mb-4 items-end">
            <Input label="Username" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} />
@@ -1050,7 +1400,7 @@ const SettingsPage: React.FC = () => {
              <Button onClick={handleAddUser}>Add User</Button>
            </div>
         </div>
-        <ul className="divide-y divide-gray-200 dark:divide-slate-700">
+        <ul className="divide-y divide-y-gray-200 dark:divide-slate-700">
            {users.map(u => (
              <li key={u.id} className="py-2 flex justify-between items-center">
                <span>{u.username} ({u.email})</span>
@@ -1060,11 +1410,30 @@ const SettingsPage: React.FC = () => {
         </ul>
       </Card>
 
-      <Card title="Backup & Reset">
-         <div className="flex gap-4">
-            <Button onClick={handleBackup} className="flex items-center gap-2"><Download size={16} /> Download Backup</Button>
-            <Button onClick={() => { if(confirm('Are you sure? This will clear all data.')) resetData(); }} variant="danger">Reset All Data</Button>
+      <Card title="Data Management (Import/Export)">
+         <div className="flex flex-wrap gap-4">
+            <Button onClick={handleBackup} className="flex items-center gap-2">
+                <Download size={16} /> Export Data (JSON)
+            </Button>
+            
+            <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileChange} 
+                className="hidden" 
+                accept=".json"
+            />
+            <Button onClick={handleImportClick} variant="secondary" className="flex items-center gap-2">
+                <Upload size={16} /> Import Data (JSON)
+            </Button>
+
+            <Button onClick={() => { if(confirm('Are you sure? This will clear all data.')) resetData(); }} variant="danger" className="flex items-center gap-2">
+                <Trash2 size={16} /> Reset All Data
+            </Button>
          </div>
+         <p className="text-xs text-gray-500 mt-2">
+            Export creates a JSON file of your data. Import restores data from a previously exported JSON file.
+         </p>
       </Card>
 
        <Card title="Contact & Help">
@@ -1110,7 +1479,7 @@ const SidebarItem: React.FC<{ icon: any; label: string; to?: string; children?: 
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({ accounts: true, financial: false, reports: false, settings: false });
+  const [openMenus, setOpenMenus] = useState<Record<string, boolean>>({ accounts: true, reports: true, settings: false });
   const { settings } = useStore();
 
   const toggleMenu = (menu: string) => setOpenMenus(prev => ({ ...prev, [menu]: !prev[menu] }));
@@ -1145,15 +1514,16 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
               <SidebarItem icon={BookOpen} label="Accounts" isOpen={openMenus.accounts} onClick={() => toggleMenu('accounts')}>
                  <SidebarItem icon={FileText} label="Chart of Accounts" to="/accounts/chart" />
                  <SidebarItem icon={Plus} label="Transactions" to="/accounts/transactions" />
-                 <SidebarItem icon={Search} label="Ledger" to="/accounts/ledger" />
-                 <SidebarItem icon={FileText} label="Trial Balance" to="/financial/trial-balance" />
               </SidebarItem>
 
-              <SidebarItem icon={PieChart} label="Financial Statements" isOpen={openMenus.financial} onClick={() => toggleMenu('financial')}>
-                 <SidebarItem icon={FileText} label="Balance Sheet" to="/financial/balance-sheet" />
-                 <SidebarItem icon={FileText} label="Income Statement" to="/financial/income-statement" />
-                 <SidebarItem icon={FileText} label="Cash Flow Statement" to="/financial/cash-flow" />
-                 <SidebarItem icon={FileText} label="Ratio Analysis" to="/financial/ratio-analysis" />
+              <SidebarItem icon={ClipboardList} label="Reports" isOpen={openMenus.reports} onClick={() => toggleMenu('reports')}>
+                 <SidebarItem icon={Search} label="Ledger" to="/reports/ledger" />
+                 <SidebarItem icon={FileText} label="Trial Balance" to="/reports/trial-balance" />
+                 <SidebarItem icon={FileText} label="Balance Sheet" to="/reports/balance-sheet" />
+                 <SidebarItem icon={FileText} label="Income Statement" to="/reports/income-statement" />
+                 <SidebarItem icon={FileText} label="Cash Flow Statement" to="/reports/cash-flow" />
+                 <SidebarItem icon={FileText} label="Ratio Analysis" to="/reports/ratio-analysis" />
+                 <SidebarItem icon={Users} label="Aged Receivables" to="/reports/aged-receivables" />
               </SidebarItem>
 
               <SidebarItem icon={Settings} label="Settings" isOpen={openMenus.settings} onClick={() => toggleMenu('settings')}>
@@ -1178,21 +1548,33 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
+declare global {
+  interface Window {
+    gapi: any;
+  }
+}
+
 const App: React.FC = () => {
+  const [showSplash, setShowSplash] = useState(true);
+
   return (
     <StoreProvider>
+      {showSplash && <SplashScreen onFinish={() => setShowSplash(false)} />}
       <HashRouter>
         <Layout>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/accounts/chart" element={<ChartOfAccounts />} />
             <Route path="/accounts/transactions" element={<Transactions />} />
-            <Route path="/accounts/ledger" element={<ReportsLedger />} />
-            <Route path="/financial/trial-balance" element={<FinancialStatements type="trial" />} />
-            <Route path="/financial/balance-sheet" element={<FinancialStatements type="balance" />} />
-            <Route path="/financial/income-statement" element={<FinancialStatements type="income" />} />
-            <Route path="/financial/cash-flow" element={<CashFlowStatement />} />
-            <Route path="/financial/ratio-analysis" element={<RatioAnalysis />} />
+            
+            <Route path="/reports/ledger" element={<ReportsLedger />} />
+            <Route path="/reports/trial-balance" element={<FinancialStatements type="trial" />} />
+            <Route path="/reports/balance-sheet" element={<FinancialStatements type="balance" />} />
+            <Route path="/reports/income-statement" element={<FinancialStatements type="income" />} />
+            <Route path="/reports/cash-flow" element={<CashFlowStatement />} />
+            <Route path="/reports/ratio-analysis" element={<RatioAnalysis />} />
+            <Route path="/reports/aged-receivables" element={<AgedReceivables />} />
+
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
