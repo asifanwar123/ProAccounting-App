@@ -11,25 +11,25 @@ import {
   Menu, 
   X, 
   ChevronDown, 
-  ChevronRight,
-  Plus,
-  Trash2,
-  Edit2,
-  Users,
-  Printer,
-  Search,
-  Download,
-  Upload,
-  Info,
-  LogIn,
-  LogOut,
-  ClipboardList,
-  MoreHorizontal,
-  ArrowRight,
-  Wallet,
-  TrendingUp,
-  CreditCard,
-  AlertCircle
+  ChevronRight, 
+  Plus, 
+  Trash2, 
+  Edit2, 
+  Users, 
+  Printer, 
+  Search, 
+  Download, 
+  Upload, 
+  Info, 
+  LogIn, 
+  LogOut, 
+  ClipboardList, 
+  MoreHorizontal, 
+  ArrowRight, 
+  Wallet, 
+  TrendingUp, 
+  CreditCard, 
+  AlertCircle 
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -44,11 +44,11 @@ import {
   Pie, 
   Cell, 
   LineChart, 
-  Line,
-  AreaChart,
-  Area,
+  Line, 
+  AreaChart, 
+  Area, 
   RadialBarChart, 
-  RadialBar
+  RadialBar 
 } from 'recharts';
 import { StoreProvider, useStore } from './context/Store';
 import { Account, AccountType, Transaction, JournalEntryLine, AppSettings, User, BackupData } from './types';
@@ -1632,7 +1632,7 @@ const AppContent: React.FC = () => {
                     </Routes>
                     
                     <footer className="mt-8 pt-8 border-t border-gray-200 dark:border-slate-700 text-center text-sm text-gray-500 dark:text-gray-400 pb-4">
-                        &copy; {new Date().getFullYear()} Pro Accounting Software. All rights reserved.
+                        &copy; {new Date().getFullYear()} Pro Accounting Software. All rights reserved. | Developed by asifanwar.online | WhatsApp: +923026834300
                     </footer>
                 </div>
              </main>
