@@ -12,6 +12,7 @@ export interface Account {
   name: string;
   type: AccountType;
   description?: string;
+  openingBalance?: number;
 }
 
 export interface JournalEntryLine {
@@ -45,6 +46,10 @@ export interface AppSettings {
   companyName: string;
   companyLogo?: string;
   taxRate: number;
+  exchangeRate: number;
+  plan: 'free' | 'pro';
+  googleClientId?: string;
+  googleApiKey?: string;
 }
 
 export interface FinancialSummary {

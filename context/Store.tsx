@@ -7,6 +7,8 @@ interface StoreContextType {
   transactions: Transaction[];
   settings: AppSettings;
   users: User[];
+  currentUser: User | null;
+  setCurrentUser: (user: User) => void;
   addAccount: (account: Account) => void;
   updateAccount: (account: Account) => void;
   deleteAccount: (id: string) => void;
@@ -28,6 +30,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
+  const [currentUser, setCurrentUser] = useState<User | null>(INITIAL_USERS[0]);
 
   // Load from local storage on mount
   useEffect(() => {
@@ -38,7 +41,11 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         if (parsed.accounts) setAccounts(parsed.accounts);
         if (parsed.transactions) setTransactions(parsed.transactions);
         if (parsed.settings) setSettings(parsed.settings);
-        if (parsed.users) setUsers(parsed.users);
+        if (parsed.users) {
+           setUsers(parsed.users);
+           // Reset current user to first admin found or first user if data loaded
+           if (parsed.users.length > 0) setCurrentUser(parsed.users[0]);
+        }
       } catch (e) {
         console.error("Failed to load data", e);
       }
@@ -77,6 +84,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setTransactions([]);
     setSettings(INITIAL_SETTINGS);
     setUsers(INITIAL_USERS);
+    setCurrentUser(INITIAL_USERS[0]);
   };
 
   const restoreData = (jsonString: string): boolean => {
@@ -100,6 +108,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       transactions,
       settings,
       users,
+      currentUser,
+      setCurrentUser,
       addAccount,
       updateAccount,
       deleteAccount,

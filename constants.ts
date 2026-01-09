@@ -24,10 +24,13 @@ export const INITIAL_SETTINGS: AppSettings = {
   theme: 'light',
   companyName: 'My Company',
   taxRate: 0,
+  exchangeRate: 1,
+  plan: 'free'
 };
 
 export const INITIAL_USERS: User[] = [
-  { id: '1', username: 'admin', email: 'admin@example.com', role: 'admin', mobile: '+123456789', address: '123 Admin St' }
+  { id: '1', username: 'Administrator', email: 'admin@company.com', role: 'admin', mobile: '+123456789', address: 'HQ' },
+  { id: '2', username: 'Auditor Viewer', email: 'viewer@company.com', role: 'viewer', mobile: '+987654321', address: 'Remote' }
 ];
 
 export const CURRENCIES = [
@@ -35,6 +38,8 @@ export const CURRENCIES = [
   { code: 'PKR', sign: 'Rs', name: 'Pakistani Rupee' },
   { code: 'JPY', sign: '¥', name: 'Japanese Yen' },
   { code: 'CNY', sign: '¥', name: 'Chinese Yuan' },
+  { code: 'AED', sign: 'AED', name: 'UAE Dirham' },
+  { code: 'SAR', sign: 'SAR', name: 'Saudi Riyal' },
 ];
 
-export const LANGUAGES = ['English', 'Urdu', 'Hindi', 'Russian'];
+export const LANGUAGES = ['English', 'Urdu', 'Hindi', 'Russian', 'Arabic'];
