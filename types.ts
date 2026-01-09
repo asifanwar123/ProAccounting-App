@@ -48,6 +48,7 @@ export interface AppSettings {
   taxRate: number;
   exchangeRate: number;
   plan: 'free' | 'pro';
+  billingDate?: string;
   googleClientId?: string;
   googleApiKey?: string;
 }

@@ -45,7 +45,9 @@ import {
   Loader,
   Key,
   Lock,
-  Copy
+  Copy,
+  Check,
+  ExternalLink
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -482,7 +484,6 @@ const HelpPage: React.FC = () => {
     const { settings, updateSettings } = useStore();
     const [msgSubject, setMsgSubject] = useState('');
     const [msgBody, setMsgBody] = useState('');
-    const [sending, setSending] = useState(false);
     
     // Pro Plan Activation State
     const [activationStep, setActivationStep] = useState<'idle' | 'payment' | 'key'>('idle');
@@ -490,20 +491,25 @@ const HelpPage: React.FC = () => {
     const [activationKey, setActivationKey] = useState('');
     const [generatedKey, setGeneratedKey] = useState('');
     const [processing, setProcessing] = useState(false);
+    const [showDemoHint, setShowDemoHint] = useState(false);
+    const [copied, setCopied] = useState(false);
 
-    const handleSendMessage = () => {
+    const handleSendEmail = () => {
         if(!msgSubject || !msgBody) {
             alert('Please fill in both subject and message.');
             return;
         }
-        setSending(true);
-        // Mock sending
-        setTimeout(() => {
-            setSending(false);
-            setMsgSubject('');
-            setMsgBody('');
-            alert('Message sent successfully! Our team will contact you shortly.');
-        }, 1500);
+        const mailtoLink = `mailto:m.asif.anwar@gmail.com?subject=${encodeURIComponent(msgSubject)}&body=${encodeURIComponent(msgBody)}`;
+        window.location.href = mailtoLink;
+    };
+
+    const handleSendWhatsApp = () => {
+        if(!msgSubject || !msgBody) {
+            alert('Please fill in both subject and message.');
+            return;
+        }
+        const waLink = `https://wa.me/923026834300?text=${encodeURIComponent(`Subject: ${msgSubject}\n\n${msgBody}`)}`;
+        window.open(waLink, '_blank');
     };
 
     const generateLicenseKey = () => {
@@ -523,26 +529,61 @@ const HelpPage: React.FC = () => {
         const message = `Hello, I have sent the payment for Pro Books Pro Plan. Please verify and send me the activation key.`;
         window.open(`https://wa.me/923026834300?text=${encodeURIComponent(message)}`, '_blank');
         
-        // Simulate the "Vendor" sending the key back after a delay (simulated via alert for the user context)
+        // Simulate the "Vendor" sending the key back after a delay
+        setProcessing(true);
         setTimeout(() => {
-            alert(`[DEMO MODE]\n\nVendor on WhatsApp says:\n"Payment received! Here is your activation key:\n\n${demoKey}\n\nPlease enter this in the app."`);
+            setProcessing(false);
+            setShowDemoHint(true);
             setActivationStep('key');
-        }, 5000); 
+        }, 3000); 
     };
 
     const handleActivateKey = () => {
         if (activationKey !== generatedKey && activationKey !== 'PRO-DEMO-KEY') {
-            alert("Invalid Activation Key. Please ensure you copied it correctly from WhatsApp.");
+            alert("Invalid Activation Key. Please ensure you copied it correctly.");
             return;
         }
         setProcessing(true);
         setTimeout(() => {
             setProcessing(false);
-            updateSettings({...settings, plan: 'pro'});
+            const nextYear = new Date();
+            nextYear.setFullYear(nextYear.getFullYear() + 1);
+            updateSettings({
+                ...settings, 
+                plan: 'pro', 
+                billingDate: nextYear.toISOString()
+            });
             setActivationStep('idle');
+            setShowDemoHint(false);
             alert("Pro Plan Activated Successfully! Thank you for your purchase.");
         }, 1500);
     };
+
+    const copyKey = async () => {
+        try {
+            await navigator.clipboard.writeText(generatedKey);
+            setCopied(true);
+        } catch (err) {
+            // Fallback for non-secure contexts (http)
+            const textArea = document.createElement("textarea");
+            textArea.value = generatedKey;
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                setCopied(true);
+            } catch (err) {
+                console.error('Unable to copy', err);
+            }
+            document.body.removeChild(textArea);
+        }
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    // Updated redirection logic: Removed blocking confirm dialog to ensure consistent browser behavior
+    const handlePaymentRedirect = (url: string) => {
+        window.open(url, '_blank');
+    }
 
     return (
         <div className="space-y-6">
@@ -558,7 +599,7 @@ const HelpPage: React.FC = () => {
                                 </div>
                                 <div>
                                     <p className="text-xs text-gray-500">Email Support</p>
-                                    <p className="font-medium">support@probooks.com</p>
+                                    <p className="font-medium">m.asif.anwar@gmail.com</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-4 text-gray-600 dark:text-gray-300">
@@ -580,7 +621,9 @@ const HelpPage: React.FC = () => {
                                 <BillingIcon className="text-yellow-600 dark:text-yellow-400" size={32} />
                                 <div>
                                     <p className="font-bold text-yellow-800 dark:text-yellow-300">Pro Plan (Active)</p>
-                                    <p className="text-xs text-yellow-600 dark:text-yellow-400">Next billing date: Dec 31, 2024</p>
+                                    <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                                        Next billing date: {settings.billingDate ? new Date(settings.billingDate).toLocaleDateString() : new Date(new Date().setFullYear(new Date().getFullYear() + 1)).toLocaleDateString()}
+                                    </p>
                                 </div>
                                 <CheckCircle className="ml-auto text-green-500" />
                             </div>
@@ -622,52 +665,84 @@ const HelpPage: React.FC = () => {
                                         <div className="space-y-2 text-xs text-gray-700 dark:text-gray-300 max-h-40 overflow-y-auto">
                                             {paymentRegion === 'intl' ? (
                                                 <>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://www.paypal.com')}
+                                                    >
                                                         <span className="text-xl">🅿️</span>
-                                                        <div><p className="font-bold">PayPal</p><p>paypal@probooks.com</p></div>
+                                                        <div className="flex-1"><p className="font-bold">PayPal</p><p>paypal@probooks.com</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://www.payoneer.com')}
+                                                    >
                                                         <span className="text-xl">💳</span>
-                                                        <div><p className="font-bold">Payoneer</p><p>payoneer@probooks.com</p></div>
+                                                        <div className="flex-1"><p className="font-bold">Payoneer</p><p>payoneer@probooks.com</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://www.binance.com')}
+                                                    >
                                                         <span className="text-xl">🔶</span>
-                                                        <div><p className="font-bold">Binance Pay</p><p>ID: 2348910</p></div>
+                                                        <div className="flex-1"><p className="font-bold">Binance Pay</p><p>ID: 2348910</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://stripe.com')}
+                                                    >
                                                         <span className="text-xl">🌐</span>
-                                                        <div><p className="font-bold">Stripe / Card</p><p>Request Link</p></div>
+                                                        <div className="flex-1"><p className="font-bold">Stripe / Card</p><p>Pay Securely</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
                                                 </>
                                             ) : (
                                                 <>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://www.jazzcash.com.pk')}
+                                                    >
                                                         <span className="text-xl">🔴</span>
-                                                        <div><p className="font-bold">JazzCash</p><p>0302-6834300</p></div>
+                                                        <div className="flex-1"><p className="font-bold">JazzCash</p><p>0302-6834300</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://easypaisa.com.pk')}
+                                                    >
                                                         <span className="text-xl">🟢</span>
-                                                        <div><p className="font-bold">EasyPaisa</p><p>0302-6834300</p></div>
+                                                        <div className="flex-1"><p className="font-bold">EasyPaisa</p><p>0302-6834300</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://sadapay.pk')}
+                                                    >
                                                         <span className="text-xl">🟧</span>
-                                                        <div><p className="font-bold">SadaPay</p><p>0302-6834300</p></div>
+                                                        <div className="flex-1"><p className="font-bold">SadaPay</p><p>0302-6834300</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
-                                                    <div className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600">
+                                                    <div 
+                                                        className="flex items-center gap-2 p-2 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-600 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-700 transition-colors"
+                                                        onClick={() => handlePaymentRedirect('https://www.meezanbank.com')}
+                                                    >
                                                         <span className="text-xl">🏦</span>
-                                                        <div><p className="font-bold">Meezan Bank</p><p>1234-5678-9012-3456</p></div>
+                                                        <div className="flex-1"><p className="font-bold">Meezan Bank</p><p>1234-5678-9012-3456</p></div>
+                                                        <ExternalLink size={14} className="text-gray-400"/>
                                                     </div>
                                                 </>
                                             )}
                                         </div>
 
                                         <p className="text-xs text-gray-500">
-                                            Make payment and send receipt to +923026834300 on WhatsApp.
+                                            Select a method to pay online or make a manual transfer and send receipt to +923026834300.
                                         </p>
 
                                         <div className="flex gap-2 flex-col">
-                                            <Button onClick={handleWhatsAppRedirect} variant="success" className="w-full flex items-center justify-center gap-2">
-                                                <MessageCircle size={16} /> Send Receipt on WhatsApp
+                                            <Button onClick={handleWhatsAppRedirect} disabled={processing} variant="success" className="w-full flex items-center justify-center gap-2">
+                                                {processing ? <Loader className="animate-spin" size={16} /> : <><MessageCircle size={16} /> Send Receipt on WhatsApp</>}
                                             </Button>
                                             <div className="flex gap-2">
                                                 <Button onClick={() => setActivationStep('idle')} variant="secondary" className="flex-1">Cancel</Button>
@@ -679,6 +754,26 @@ const HelpPage: React.FC = () => {
 
                                 {activationStep === 'key' && (
                                     <div className="bg-green-50 dark:bg-slate-750 border border-green-200 dark:border-slate-600 p-4 rounded-lg space-y-3">
+                                        
+                                        {showDemoHint && (
+                                            <div 
+                                                className="mb-2 p-3 bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-300 dark:border-yellow-700 rounded-md cursor-pointer hover:bg-yellow-200 dark:hover:bg-yellow-900/50 transition-colors group relative"
+                                                onClick={copyKey}
+                                                title="Click to Copy Key"
+                                            >
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-xs font-bold text-yellow-800 dark:text-yellow-300 uppercase tracking-wider">Demo Mode Active</span>
+                                                    {copied ? <span className="text-xs text-green-600 font-bold flex items-center gap-1"><Check size={12}/> Copied</span> : <span className="text-xs text-gray-500">Click key to copy</span>}
+                                                </div>
+                                                <div className="font-mono text-lg font-bold text-center text-gray-800 dark:text-gray-100 tracking-widest mt-1">
+                                                    {generatedKey}
+                                                </div>
+                                                <div className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <Copy size={16} className="text-gray-500"/>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         <h5 className="font-bold text-sm text-gray-800 dark:text-gray-200">2. Enter Activation Key</h5>
                                         <div className="relative">
                                             <Key size={16} className="absolute left-3 top-3 text-gray-400" />
@@ -733,10 +828,14 @@ const HelpPage: React.FC = () => {
                                     onChange={e => setMsgBody(e.target.value)}
                                 ></textarea>
                             </div>
-                            <Button onClick={handleSendMessage} disabled={sending} className="w-full flex items-center justify-center gap-2">
-                                {sending ? <Loader className="animate-spin" size={16} /> : <Send size={16} />} 
-                                {sending ? 'Sending...' : 'Send Message'}
-                            </Button>
+                            <div className="flex gap-2">
+                                <Button onClick={handleSendEmail} className="flex-1 flex items-center justify-center gap-2">
+                                    <Mail size={16} /> Send Email
+                                </Button>
+                                <Button onClick={handleSendWhatsApp} variant="success" className="flex-1 flex items-center justify-center gap-2">
+                                    <MessageCircle size={16} /> WhatsApp
+                                </Button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -745,7 +844,7 @@ const HelpPage: React.FC = () => {
     );
 };
 
-// --- Added Components ---
+// ... (rest of the file remains the same)
 
 const Transactions: React.FC = () => {
   const { transactions, accounts, addTransaction, deleteTransaction, settings, currentUser } = useStore();
