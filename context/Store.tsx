@@ -21,6 +21,9 @@ interface StoreContextType {
   deleteUser: (id: string) => void;
   resetData: () => void;
   restoreData: (data: string) => boolean;
+  saveToCloud: () => Promise<boolean>;
+  loadFromCloud: () => Promise<boolean>;
+  isSyncing: boolean;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -31,6 +34,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
   const [currentUser, setCurrentUser] = useState<User | null>(INITIAL_USERS[0]);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Load from local storage on mount
   useEffect(() => {
@@ -100,7 +104,85 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     } catch (e) {
       return false;
     }
-  }
+  };
+
+  const saveToCloud = async (): Promise<boolean> => {
+    if (!settings.remoteStorageUrl) return false;
+    setIsSyncing(true);
+    try {
+        const data = { accounts, transactions, settings, users };
+        // Supports Generic JSON Stores (e.g., JSONBin.io, MyJSON, or custom backend)
+        const response = await fetch(settings.remoteStorageUrl, {
+            method: 'PUT', // PUT is often used for updates, POST for creation. Generic implementation might differ.
+            headers: {
+                'Content-Type': 'application/json',
+                // Add standard auth headers and specific ones for popular services
+                ...(settings.remoteStorageApiKey ? { 
+                    'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
+                    'X-Master-Key': settings.remoteStorageApiKey, // JSONBin
+                    'X-Access-Key': settings.remoteStorageApiKey 
+                } : {})
+            },
+            body: JSON.stringify(data)
+        });
+        
+        if (!response.ok) {
+            // Fallback to POST if PUT fails (some APIs only support POST)
+             const responsePost = await fetch(settings.remoteStorageUrl, {
+                method: 'POST', 
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(settings.remoteStorageApiKey ? { 
+                        'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
+                        'X-Master-Key': settings.remoteStorageApiKey,
+                        'X-Access-Key': settings.remoteStorageApiKey 
+                    } : {})
+                },
+                body: JSON.stringify(data)
+            });
+            if (!responsePost.ok) throw new Error("Cloud save failed");
+        }
+        
+        setIsSyncing(false);
+        return true;
+    } catch (e) {
+        console.error("Cloud Save Error:", e);
+        setIsSyncing(false);
+        return false;
+    }
+  };
+
+  const loadFromCloud = async (): Promise<boolean> => {
+      if (!settings.remoteStorageUrl) return false;
+      setIsSyncing(true);
+      try {
+          const response = await fetch(settings.remoteStorageUrl, {
+              method: 'GET',
+              headers: {
+                  'Content-Type': 'application/json',
+                  ...(settings.remoteStorageApiKey ? { 
+                      'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
+                      'X-Master-Key': settings.remoteStorageApiKey,
+                      'X-Access-Key': settings.remoteStorageApiKey 
+                  } : {})
+              }
+          });
+          
+          if (!response.ok) throw new Error("Cloud load failed");
+          
+          const result = await response.json();
+          // JSONBin wrapper check (it sometimes wraps data in 'record')
+          const data = result.record ? result.record : result;
+          
+          const success = restoreData(JSON.stringify(data));
+          setIsSyncing(false);
+          return success;
+      } catch (e) {
+          console.error("Cloud Load Error:", e);
+          setIsSyncing(false);
+          return false;
+      }
+  };
 
   return (
     <StoreContext.Provider value={{
@@ -121,7 +203,10 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       updateUser,
       deleteUser,
       resetData,
-      restoreData
+      restoreData,
+      saveToCloud,
+      loadFromCloud,
+      isSyncing
     }}>
       {children}
     </StoreContext.Provider>

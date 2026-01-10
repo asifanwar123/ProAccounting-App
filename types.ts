@@ -51,6 +51,8 @@ export interface AppSettings {
   billingDate?: string;
   googleClientId?: string;
   googleApiKey?: string;
+  remoteStorageUrl?: string;
+  remoteStorageApiKey?: string;
 }
 
 export interface FinancialSummary {

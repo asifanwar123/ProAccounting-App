@@ -48,7 +48,8 @@ import {
   Copy,
   Check,
   ExternalLink,
-  Database
+  Database,
+  Server
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -1549,12 +1550,13 @@ const AgedReceivables: React.FC = () => {
 };
 
 const SettingsPage: React.FC = () => {
-  const { settings, updateSettings, resetData, restoreData, saveToCloud, loadFromCloud, isSyncing, currentUser } = useStore();
+  const { settings, updateSettings, resetData, restoreData, saveToCloud, loadFromCloud, isSyncing, currentUser, accounts, transactions, users } = useStore();
   const isViewer = currentUser?.role === 'viewer';
   const [file, setFile] = useState<File | null>(null);
   const [gLoading, setGLoading] = useState(false);
   const [loadingRate, setLoadingRate] = useState(false);
   const [cloudMsg, setCloudMsg] = useState('');
+  const [creatingBin, setCreatingBin] = useState(false);
 
   // --- Exchange Rate Logic ---
   const fetchExchangeRate = async (currency: string) => {
@@ -1751,6 +1753,49 @@ const SettingsPage: React.FC = () => {
       }
   };
 
+  const handleCreateJsonBin = async () => {
+      if (!settings.remoteStorageApiKey) {
+          alert("Please enter your JSONBin.io Master Key (API Key) first.");
+          return;
+      }
+      setCreatingBin(true);
+      try {
+          const data = { accounts, transactions, settings, users };
+          const response = await fetch('https://api.jsonbin.io/v3/b', {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'X-Master-Key': settings.remoteStorageApiKey,
+                  'X-Bin-Name': `ProBooks_Backup_${Date.now()}`
+              },
+              body: JSON.stringify(data)
+          });
+          
+          if (!response.ok) {
+              const err = await response.json();
+              throw new Error(err.message || 'Failed to create bin');
+          }
+
+          const result = await response.json();
+          const binId = result.metadata.id;
+          const newUrl = `https://api.jsonbin.io/v3/b/${binId}`;
+          
+          updateSettings({
+              ...settings,
+              remoteStorageUrl: newUrl
+          });
+          
+          setCloudMsg(`Bin created successfully! URL auto-filled.`);
+          alert(`Bin created successfully! URL updated.\nBin ID: ${binId}`);
+      } catch (e: any) {
+          console.error(e);
+          setCloudMsg(`Error creating bin: ${e.message}`);
+          alert(`Error creating bin: ${e.message}`);
+      } finally {
+          setCreatingBin(false);
+      }
+  };
+
   return (
     <div className="space-y-6">
       <Card title="General Settings">
@@ -1784,22 +1829,34 @@ const SettingsPage: React.FC = () => {
       <>
         <Card title="Remote Database Connection">
             <div className="bg-blue-50 dark:bg-slate-700 p-4 rounded-lg mb-4 text-sm text-blue-800 dark:text-blue-200">
-                <p>Connect to an external JSON storage API (e.g., JSONBin.io, MyJSON) or your custom backend.</p>
+                <p className="flex items-center gap-2"><Server size={16}/> Connect to an external JSON storage API (e.g., JSONBin.io, MyJSON) or your custom backend.</p>
             </div>
             <div className="grid grid-cols-1 gap-4 mb-4">
                 <Input 
-                    label="API Endpoint URL" 
-                    placeholder="https://api.jsonbin.io/v3/b/..." 
-                    value={settings.remoteStorageUrl || ''} 
-                    onChange={e => updateSettings({...settings, remoteStorageUrl: e.target.value})} 
-                />
-                <Input 
-                    label="API Key / Auth Token (Optional)" 
+                    label="API Key / Auth Token" 
                     type="password"
                     placeholder="X-Master-Key or Bearer Token" 
                     value={settings.remoteStorageApiKey || ''} 
                     onChange={e => updateSettings({...settings, remoteStorageApiKey: e.target.value})} 
                 />
+                
+                <div className="flex gap-2 items-end">
+                    <div className="flex-1">
+                        <Input 
+                            label="API Endpoint URL" 
+                            placeholder="https://api.jsonbin.io/v3/b/..." 
+                            value={settings.remoteStorageUrl || ''} 
+                            onChange={e => updateSettings({...settings, remoteStorageUrl: e.target.value})} 
+                        />
+                    </div>
+                    {settings.remoteStorageApiKey && !settings.remoteStorageUrl && (
+                        <div className="mb-3">
+                            <Button onClick={handleCreateJsonBin} disabled={creatingBin} variant="secondary" className="whitespace-nowrap flex items-center gap-2 h-[42px]">
+                                {creatingBin ? <Loader className="animate-spin" size={16}/> : <Plus size={16}/>} Create New Bin (JSONBin)
+                            </Button>
+                        </div>
+                    )}
+                </div>
             </div>
             <div className="flex gap-4 items-center">
                 <Button onClick={() => handleCloudSync('up')} disabled={isSyncing || !settings.remoteStorageUrl} variant="primary" className="flex items-center gap-2">
@@ -1809,7 +1866,7 @@ const SettingsPage: React.FC = () => {
                     {isSyncing ? <Loader className="animate-spin" size={16}/> : <Download size={16}/>} Load from Remote DB
                 </Button>
             </div>
-            {cloudMsg && <p className={`mt-2 text-sm ${cloudMsg.includes('Failed') ? 'text-red-500' : 'text-green-500'}`}>{cloudMsg}</p>}
+            {cloudMsg && <p className={`mt-2 text-sm ${cloudMsg.includes('Error') ? 'text-red-500' : 'text-green-500'}`}>{cloudMsg}</p>}
         </Card>
 
         <Card title="Cloud Backup (Google Drive)">
