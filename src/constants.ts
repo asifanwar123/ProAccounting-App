@@ -26,7 +26,8 @@ export const INITIAL_SETTINGS: AppSettings = {
   taxRate: 0,
   exchangeRate: 1,
   plan: 'free',
-  remoteStorageUrl: 'https://api.jsonbin.io/v3/b/6961d7c143b1c97be925d300'
+  remoteStorageUrl: '',
+  autoCloudSave: false
 };
 
 export const INITIAL_USERS: User[] = [
