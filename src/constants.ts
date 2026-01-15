@@ -14,6 +14,9 @@ export const INITIAL_ACCOUNTS: Account[] = [
   { id: '11', code: '50100', name: 'Rent Expense', type: AccountType.EXPENSE },
   { id: '12', code: '50200', name: 'Utilities Expense', type: AccountType.EXPENSE },
   { id: '13', code: '50300', name: 'Salaries Expense', type: AccountType.EXPENSE },
+  { id: '14', code: '50400', name: 'Advertising & Marketing', type: AccountType.EXPENSE },
+  { id: '15', code: '50500', name: 'Software & Subscriptions', type: AccountType.EXPENSE },
+  { id: '16', code: '10400', name: 'Computer Equipment', type: AccountType.ASSET },
 ];
 
 export const INITIAL_SETTINGS: AppSettings = {

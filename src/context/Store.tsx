@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
-import { Account, Transaction, AppSettings, User } from '../types';
+import { Account, Transaction, AppSettings, User, AccountType } from '../types';
 import { INITIAL_ACCOUNTS, INITIAL_SETTINGS, INITIAL_USERS } from '../constants';
 import { createClient } from '@supabase/supabase-js';
 
@@ -22,6 +22,7 @@ interface StoreContextType {
   deleteUser: (id: string) => void;
   resetData: () => void;
   restoreData: (data: string) => boolean;
+  loadDemoData: () => void;
   saveToCloud: () => Promise<boolean>;
   loadFromCloud: () => Promise<boolean>;
   syncWithSupabase: (direction: 'push' | 'pull') => Promise<{ success: boolean; message: string }>;
@@ -207,6 +208,79 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       }
   };
 
+  const loadDemoData = () => {
+    const demoAccounts = [...INITIAL_ACCOUNTS];
+    
+    // Helper to get ID
+    const getAccId = (namePart: string) => demoAccounts.find(a => a.name.toLowerCase().includes(namePart.toLowerCase()))?.id || '';
+
+    const bankId = getAccId('Bank');
+    const cashId = getAccId('Cash');
+    const salesId = getAccId('Sales Revenue');
+    const serviceId = getAccId('Service Revenue');
+    const equityId = getAccId('Owner\'s Equity');
+    const marketingId = getAccId('Advertising');
+    const softwareId = getAccId('Software');
+    const rentId = getAccId('Rent');
+    const equipId = getAccId('Computer');
+    const payableId = getAccId('Accounts Payable');
+
+    const today = new Date();
+    const demoTransactions: Transaction[] = [];
+
+    const addTrans = (desc: string, dateOffset: number, debitId: string, creditId: string, amount: number) => {
+        const date = new Date(today);
+        date.setDate(date.getDate() - dateOffset);
+        demoTransactions.push({
+            id: Date.now().toString() + Math.random().toString(),
+            date: date.toISOString().split('T')[0],
+            description: desc,
+            lines: [
+                { accountId: debitId, debit: amount, credit: 0 },
+                { accountId: creditId, debit: 0, credit: amount }
+            ]
+        });
+    };
+
+    // 1. Initial Investment
+    addTrans("Owner Investment", 90, bankId, equityId, 50000);
+    
+    // 2. Setup Costs
+    addTrans("Office Rent - Month 1", 88, rentId, bankId, 2000);
+    addTrans("MacBook Pro Purchase", 85, equipId, bankId, 2500);
+    addTrans("Software Licenses (Adobe, Jira)", 85, softwareId, bankId, 150);
+
+    // 3. Marketing Push
+    addTrans("Facebook Ads Campaign", 80, marketingId, bankId, 500);
+    addTrans("Google Ads Start", 75, marketingId, bankId, 600);
+
+    // 4. Sales and Income (Month 1-2)
+    addTrans("Web Design Project - Client A", 70, bankId, serviceId, 3000);
+    addTrans("Product Sale #101", 65, cashId, salesId, 120);
+    addTrans("Consulting Fee - Tech Corp", 60, bankId, serviceId, 5000);
+    
+    // 5. Monthly Expenses
+    addTrans("Office Rent - Month 2", 58, rentId, bankId, 2000);
+    addTrans("Utility Bill", 55, getAccId('Utilities'), bankId, 300);
+    addTrans("Marketing Retainer", 50, marketingId, bankId, 1000);
+
+    // 6. More Income
+    addTrans("E-commerce Sales Batch", 45, bankId, salesId, 4500);
+    addTrans("Logo Design - Startup X", 40, bankId, serviceId, 800);
+    addTrans("Maintenance Contract", 35, bankId, serviceId, 1200);
+
+    // 7. Recent Activity (Month 3)
+    addTrans("Office Rent - Month 3", 28, rentId, bankId, 2000);
+    addTrans("Instagram Influencer Promo", 20, marketingId, bankId, 1500);
+    addTrans("Big Client Project Deposit", 10, bankId, serviceId, 8000);
+    addTrans("Server Costs (AWS)", 5, softwareId, bankId, 400);
+    addTrans("Quick Sale", 2, cashId, salesId, 250);
+
+    setAccounts(demoAccounts);
+    setTransactions(demoTransactions);
+    setSettings({ ...INITIAL_SETTINGS, companyName: "Demo Corp Inc.", plan: 'pro' });
+  };
+
   const addAccount = (account: Account) => setAccounts([...accounts, account]);
   const updateAccount = (account: Account) => setAccounts(accounts.map(a => a.id === account.id ? account : a));
   const deleteAccount = (id: string) => setAccounts(accounts.filter(a => a.id !== id));
@@ -263,6 +337,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       deleteUser,
       resetData,
       restoreData,
+      loadDemoData,
       saveToCloud,
       loadFromCloud,
       syncWithSupabase,
