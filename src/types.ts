@@ -6,6 +6,8 @@ export enum AccountType {
   EXPENSE = 'Expense'
 }
 
+export type Permission = 'manage_settings' | 'manage_users' | 'manage_accounts' | 'manage_transactions' | 'view_reports';
+
 export interface Account {
   id: string;
   code: string;
@@ -24,8 +26,10 @@ export interface JournalEntryLine {
 export interface Transaction {
   id: string;
   date: string; // YYYY-MM-DD
+  dueDate?: string; // YYYY-MM-DD
   description: string;
   lines: JournalEntryLine[];
+  contact?: string;
 }
 
 export interface User {
@@ -34,7 +38,16 @@ export interface User {
   email: string;
   mobile?: string;
   address?: string;
-  role: 'admin' | 'viewer';
+  role: 'admin' | 'viewer' | 'editor'; 
+  permissions: Permission[];
+}
+
+export interface ReportConfig {
+  showZeroBalance: boolean;
+  showAccountCodes: boolean;
+  compactView: boolean;
+  headerText?: string;
+  footerText?: string;
 }
 
 export interface AppSettings {
@@ -56,6 +69,10 @@ export interface AppSettings {
   autoCloudSave?: boolean;
   supabaseUrl?: string;
   supabaseKey?: string;
+  reportConfig: ReportConfig;
+  lowStockThreshold?: number;
+  emailNotifications?: boolean;
+  notificationEmail?: string;
 }
 
 export interface FinancialSummary {
@@ -65,6 +82,14 @@ export interface FinancialSummary {
   totalIncome: number;
   totalExpenses: number;
   netIncome: number;
+}
+
+export interface Notification {
+  id: string;
+  type: 'warning' | 'info' | 'success';
+  message: string;
+  date: string;
+  read: boolean;
 }
 
 export interface BackupData {

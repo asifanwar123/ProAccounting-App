@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Account, Transaction, AppSettings, User } from '../types';
-import { INITIAL_ACCOUNTS, INITIAL_SETTINGS, INITIAL_USERS } from '../constants';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import { Account, Transaction, AppSettings, User, AccountType, Permission, Notification } from '../types';
+import { INITIAL_ACCOUNTS, INITIAL_SETTINGS, INITIAL_USERS, ADMIN_PERMISSIONS, VIEWER_PERMISSIONS } from '../constants';
+import { createClient } from '@supabase/supabase-js';
 
 interface StoreContextType {
   accounts: Account[];
@@ -8,6 +9,7 @@ interface StoreContextType {
   settings: AppSettings;
   users: User[];
   currentUser: User | null;
+  notifications: Notification[];
   setCurrentUser: (user: User) => void;
   addAccount: (account: Account) => void;
   updateAccount: (account: Account) => void;
@@ -21,9 +23,14 @@ interface StoreContextType {
   deleteUser: (id: string) => void;
   resetData: () => void;
   restoreData: (data: string) => boolean;
+  loadDemoData: () => void;
   saveToCloud: () => Promise<boolean>;
   loadFromCloud: () => Promise<boolean>;
+  syncWithSupabase: (direction: 'push' | 'pull') => Promise<{ success: boolean; message: string }>;
   isSyncing: boolean;
+  hasPermission: (permission: Permission) => boolean;
+  markNotificationRead: (id: string) => void;
+  generateNotifications: () => void;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -35,7 +42,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [users, setUsers] = useState<User[]>(INITIAL_USERS);
   const [currentUser, setCurrentUser] = useState<User | null>(INITIAL_USERS[0]);
   const [isSyncing, setIsSyncing] = useState(false);
-
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  
   // Load from local storage on mount
   useEffect(() => {
     const storedData = localStorage.getItem('proAccountingData');
@@ -44,11 +52,15 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         const parsed = JSON.parse(storedData);
         if (parsed.accounts) setAccounts(parsed.accounts);
         if (parsed.transactions) setTransactions(parsed.transactions);
-        if (parsed.settings) setSettings(parsed.settings);
+        if (parsed.settings) setSettings({ ...INITIAL_SETTINGS, ...parsed.settings });
         if (parsed.users) {
-           setUsers(parsed.users);
-           // Reset current user to first admin found or first user if data loaded
-           if (parsed.users.length > 0) setCurrentUser(parsed.users[0]);
+           // Migration for permissions
+           const updatedUsers = parsed.users.map((u: User) => ({
+             ...u,
+             permissions: u.permissions || (u.role === 'admin' ? ADMIN_PERMISSIONS : VIEWER_PERMISSIONS)
+           }));
+           setUsers(updatedUsers);
+           if (updatedUsers.length > 0) setCurrentUser(updatedUsers[0]);
         }
       } catch (e) {
         console.error("Failed to load data", e);
@@ -61,13 +73,236 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     const data = { accounts, transactions, settings, users };
     localStorage.setItem('proAccountingData', JSON.stringify(data));
     
-    // Apply theme
     if (settings.theme === 'dark') {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
   }, [accounts, transactions, settings, users]);
+
+  // Notifications Logic
+  const generateNotifications = useCallback(() => {
+    const newNotifs: Notification[] = [];
+    const today = new Date();
+
+    // 1. Check Due Dates
+    transactions.forEach(t => {
+       if (t.dueDate) {
+           const due = new Date(t.dueDate);
+           const diffTime = due.getTime() - today.getTime();
+           const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+           
+           if (diffDays >= 0 && diffDays <= 3) {
+               newNotifs.push({
+                   id: `due-${t.id}`,
+                   type: 'warning',
+                   message: `Bill due soon: ${t.description} (${t.dueDate})`,
+                   date: today.toISOString(),
+                   read: false
+               });
+           }
+       }
+    });
+
+    // 2. Low Stock (Simulated based on Inventory Asset Balance)
+    const inventoryAcc = accounts.find(a => a.name.toLowerCase().includes('inventory'));
+    if (inventoryAcc) {
+        let balance = inventoryAcc.openingBalance || 0;
+        transactions.forEach(t => {
+            t.lines.forEach(l => {
+                if(l.accountId === inventoryAcc.id) {
+                    balance += (l.debit - l.credit);
+                }
+            });
+        });
+
+        const threshold = settings.lowStockThreshold || 1000;
+        if (balance < threshold) {
+            newNotifs.push({
+                id: `stock-${today.getDate()}`,
+                type: 'warning',
+                message: `Low Inventory Value: ${settings.currencySign}${balance} (Threshold: ${threshold})`,
+                date: today.toISOString(),
+                read: false
+            });
+        }
+    }
+
+    setNotifications(prev => {
+        // Merge without duplicates based on ID
+        const combined = [...prev];
+        newNotifs.forEach(n => {
+            if(!combined.find(c => c.id === n.id)) combined.push(n);
+        });
+        return combined;
+    });
+  }, [accounts, transactions, settings]);
+
+  useEffect(() => {
+      generateNotifications();
+  }, [transactions, accounts, generateNotifications]);
+
+
+  const hasPermission = (permission: Permission): boolean => {
+      if (!currentUser) return false;
+      return currentUser.permissions.includes(permission);
+  };
+
+  const saveToCloud = async (): Promise<boolean> => {
+    if (!settings.remoteStorageUrl) return false;
+    setIsSyncing(true);
+    try {
+        const data = { accounts, transactions, settings, users };
+        const response = await fetch(settings.remoteStorageUrl, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(settings.remoteStorageApiKey ? { 
+                    'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
+                    'X-Master-Key': settings.remoteStorageApiKey, 
+                    'X-Access-Key': settings.remoteStorageApiKey 
+                } : {})
+            },
+            body: JSON.stringify(data)
+        });
+        
+        if (!response.ok) {
+             const responsePost = await fetch(settings.remoteStorageUrl, {
+                method: 'POST', 
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(settings.remoteStorageApiKey ? { 
+                        'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
+                        'X-Master-Key': settings.remoteStorageApiKey,
+                        'X-Access-Key': settings.remoteStorageApiKey 
+                    } : {})
+                },
+                body: JSON.stringify(data)
+            });
+            if (!responsePost.ok) throw new Error("Cloud save failed");
+        }
+        
+        setIsSyncing(false);
+        return true;
+    } catch (e) {
+        console.error("Cloud Save Error:", e);
+        setIsSyncing(false);
+        return false;
+    }
+  };
+
+  const syncWithSupabase = async (direction: 'push' | 'pull'): Promise<{ success: boolean; message: string }> => {
+    if (!settings.supabaseUrl || !settings.supabaseKey) {
+        return { success: false, message: 'Supabase URL and Key are required.' };
+    }
+
+    setIsSyncing(true);
+    try {
+        const supabase = createClient(settings.supabaseUrl, settings.supabaseKey);
+        const BACKUP_ID = 'pro_accounting_backup'; 
+
+        if (direction === 'push') {
+            const backupData = { accounts, transactions, settings, users };
+            const { error } = await supabase
+                .from('app_storage')
+                .upsert({ id: BACKUP_ID, data: backupData, updated_at: new Date().toISOString() });
+
+            if (error) throw error;
+            setIsSyncing(false);
+            return { success: true, message: 'Data saved to Supabase successfully.' };
+        } else {
+            const { data, error } = await supabase
+                .from('app_storage')
+                .select('data')
+                .eq('id', BACKUP_ID)
+                .single();
+
+            if (error) throw error;
+            if (!data || !data.data) throw new Error("No backup found.");
+
+            const success = restoreData(JSON.stringify(data.data));
+            setIsSyncing(false);
+            return { success, message: success ? 'Data loaded from Supabase.' : 'Failed to parse data.' };
+        }
+    } catch (e: any) {
+        console.error("Supabase Sync Error", e);
+        setIsSyncing(false);
+        if (e.code === '42P01') {
+            return { success: false, message: "Table 'app_storage' does not exist in Supabase. Run the SQL setup." };
+        }
+        return { success: false, message: e.message || 'Supabase sync failed.' };
+    }
+  };
+
+  useEffect(() => {
+    if (settings.autoCloudSave) {
+        const timer = setTimeout(() => {
+            if(!isSyncing) {
+                if (settings.supabaseUrl && settings.supabaseKey) {
+                    syncWithSupabase('push').catch(e => console.error(e));
+                } else if (settings.remoteStorageUrl) {
+                    saveToCloud().catch(e => console.error(e));
+                }
+            }
+        }, 5000); 
+        return () => clearTimeout(timer);
+    }
+  }, [accounts, transactions, users, settings.autoCloudSave, settings.supabaseUrl, settings.supabaseKey, settings.remoteStorageUrl]);
+
+  const loadFromCloud = async (): Promise<boolean> => {
+      if (!settings.remoteStorageUrl) return false;
+      setIsSyncing(true);
+      try {
+          const response = await fetch(settings.remoteStorageUrl, {
+              method: 'GET',
+              headers: {
+                  'Content-Type': 'application/json',
+                  ...(settings.remoteStorageApiKey ? { 
+                      'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
+                      'X-Master-Key': settings.remoteStorageApiKey, 
+                      'X-Access-Key': settings.remoteStorageApiKey 
+                  } : {})
+              }
+          });
+          
+          if (!response.ok) throw new Error("Cloud load failed");
+          
+          const result = await response.json();
+          const data = result.record ? result.record : result;
+          
+          const success = restoreData(JSON.stringify(data));
+          setIsSyncing(false);
+          return success;
+      } catch (e) {
+          console.error("Cloud Load Error:", e);
+          setIsSyncing(false);
+          return false;
+      }
+  };
+
+  const loadDemoData = () => {
+    // Demo data implementation (same as before but ensures types match)
+    const demoAccounts = [...INITIAL_ACCOUNTS];
+    const getAccId = (namePart: string) => demoAccounts.find(a => a.name.toLowerCase().includes(namePart.toLowerCase()))?.id || '';
+    const bankId = getAccId('Bank');
+    const equityId = getAccId('Owner\'s Equity');
+    
+    // Minimal demo set for brevity
+    const transactions: Transaction[] = [];
+    transactions.push({
+        id: `demo-init-${Date.now()}`,
+        date: new Date().toISOString().split('T')[0],
+        description: "Initial Owner Investment",
+        lines: [
+            { accountId: bankId, debit: 150000, credit: 0 },
+            { accountId: equityId, debit: 0, credit: 150000 }
+        ]
+    });
+    
+    setAccounts(demoAccounts);
+    setTransactions(transactions);
+    setSettings({ ...INITIAL_SETTINGS, companyName: "ACC Demo", plan: 'pro' });
+  };
 
   const addAccount = (account: Account) => setAccounts([...accounts, account]);
   const updateAccount = (account: Account) => setAccounts(accounts.map(a => a.id === account.id ? account : a));
@@ -94,11 +329,10 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const restoreData = (jsonString: string): boolean => {
     try {
       const parsed = JSON.parse(jsonString);
-      // Basic validation
       if (!Array.isArray(parsed.accounts)) return false;
       setAccounts(parsed.accounts);
       setTransactions(parsed.transactions || []);
-      setSettings(parsed.settings || INITIAL_SETTINGS);
+      setSettings({ ...INITIAL_SETTINGS, ...parsed.settings });
       setUsers(parsed.users || INITIAL_USERS);
       return true;
     } catch (e) {
@@ -106,82 +340,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
   };
 
-  const saveToCloud = async (): Promise<boolean> => {
-    if (!settings.remoteStorageUrl) return false;
-    setIsSyncing(true);
-    try {
-        const data = { accounts, transactions, settings, users };
-        // Supports Generic JSON Stores (e.g., JSONBin.io, MyJSON, or custom backend)
-        const response = await fetch(settings.remoteStorageUrl, {
-            method: 'PUT', // PUT is often used for updates, POST for creation. Generic implementation might differ.
-            headers: {
-                'Content-Type': 'application/json',
-                // Add standard auth headers and specific ones for popular services
-                ...(settings.remoteStorageApiKey ? { 
-                    'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
-                    'X-Master-Key': settings.remoteStorageApiKey, // JSONBin
-                    'X-Access-Key': settings.remoteStorageApiKey 
-                } : {})
-            },
-            body: JSON.stringify(data)
-        });
-        
-        if (!response.ok) {
-            // Fallback to POST if PUT fails (some APIs only support POST)
-             const responsePost = await fetch(settings.remoteStorageUrl, {
-                method: 'POST', 
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(settings.remoteStorageApiKey ? { 
-                        'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
-                        'X-Master-Key': settings.remoteStorageApiKey,
-                        'X-Access-Key': settings.remoteStorageApiKey 
-                    } : {})
-                },
-                body: JSON.stringify(data)
-            });
-            if (!responsePost.ok) throw new Error("Cloud save failed");
-        }
-        
-        setIsSyncing(false);
-        return true;
-    } catch (e) {
-        console.error("Cloud Save Error:", e);
-        setIsSyncing(false);
-        return false;
-    }
-  };
-
-  const loadFromCloud = async (): Promise<boolean> => {
-      if (!settings.remoteStorageUrl) return false;
-      setIsSyncing(true);
-      try {
-          const response = await fetch(settings.remoteStorageUrl, {
-              method: 'GET',
-              headers: {
-                  'Content-Type': 'application/json',
-                  ...(settings.remoteStorageApiKey ? { 
-                      'Authorization': `Bearer ${settings.remoteStorageApiKey}`, 
-                      'X-Master-Key': settings.remoteStorageApiKey,
-                      'X-Access-Key': settings.remoteStorageApiKey 
-                  } : {})
-              }
-          });
-          
-          if (!response.ok) throw new Error("Cloud load failed");
-          
-          const result = await response.json();
-          // JSONBin wrapper check (it sometimes wraps data in 'record')
-          const data = result.record ? result.record : result;
-          
-          const success = restoreData(JSON.stringify(data));
-          setIsSyncing(false);
-          return success;
-      } catch (e) {
-          console.error("Cloud Load Error:", e);
-          setIsSyncing(false);
-          return false;
-      }
+  const markNotificationRead = (id: string) => {
+      setNotifications(notifications.map(n => n.id === id ? { ...n, read: true } : n));
   };
 
   return (
@@ -191,6 +351,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       settings,
       users,
       currentUser,
+      notifications,
       setCurrentUser,
       addAccount,
       updateAccount,
@@ -204,9 +365,14 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       deleteUser,
       resetData,
       restoreData,
+      loadDemoData,
       saveToCloud,
       loadFromCloud,
-      isSyncing
+      syncWithSupabase,
+      isSyncing,
+      hasPermission,
+      markNotificationRead,
+      generateNotifications
     }}>
       {children}
     </StoreContext.Provider>
