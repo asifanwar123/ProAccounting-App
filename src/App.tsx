@@ -57,7 +57,8 @@ import {
   Bell,
   Image as ImageIcon,
   Calendar,
-  Filter
+  Filter,
+  FileSpreadsheet
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -83,6 +84,18 @@ import { Account, AccountType, Transaction, JournalEntryLine, AppSettings, User,
 import { CURRENCIES, LANGUAGES, INITIAL_ACCOUNTS, ADMIN_PERMISSIONS, VIEWER_PERMISSIONS } from './constants';
 
 declare const gapi: any;
+
+// --- Helper Functions ---
+const fetchUSDRate = async (currency: string) => {
+    if (currency === 'USD') return 1;
+    try {
+        const response = await fetch(`https://open.er-api.com/v6/latest/USD`);
+        const data = await response.json();
+        return data.rates[currency] || 1;
+    } catch {
+        return 1;
+    }
+};
 
 // --- Helper Components ---
 
@@ -131,7 +144,7 @@ const Select: React.FC<React.SelectHTMLAttributes<HTMLSelectElement> & { label?:
 );
 
 const NotificationCenter: React.FC = () => {
-    const { notifications, markNotificationRead, settings } = useStore();
+    const { notifications, markNotificationRead, settings, syncStatus } = useStore();
     const [open, setOpen] = useState(false);
     const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -144,7 +157,12 @@ const NotificationCenter: React.FC = () => {
     };
 
     return (
-        <div className="relative">
+        <div className="relative flex items-center gap-4">
+            {syncStatus && (
+                <div className="hidden md:flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-slate-800 px-3 py-1 rounded-full animate-pulse">
+                    <Cloud size={12}/> {syncStatus}
+                </div>
+            )}
             <button className="relative p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full" onClick={() => setOpen(!open)}>
                 <Bell size={20} />
                 {unreadCount > 0 && (
@@ -152,7 +170,7 @@ const NotificationCenter: React.FC = () => {
                 )}
             </button>
             {open && (
-                <div className="absolute right-0 mt-2 w-80 bg-white dark:bg-slate-800 rounded-xl shadow-xl z-50 border dark:border-slate-700 overflow-hidden">
+                <div className="absolute right-0 top-10 w-80 bg-white dark:bg-slate-800 rounded-xl shadow-xl z-50 border dark:border-slate-700 overflow-hidden">
                     <div className="p-4 border-b dark:border-slate-700 flex justify-between items-center">
                         <h4 className="font-bold">Notifications</h4>
                         <button onClick={handleSendEmail} className="text-xs text-blue-600 hover:underline">Email Report</button>
@@ -212,17 +230,32 @@ const formatCurrency = (amount: number, settings: AppSettings) => {
   return settings.showCurrencySign ? `${settings.currencySign} ${formatted}` : formatted;
 };
 
-// --- Logic Helpers ---
 const getAccountBalance = (account: Account | undefined, transactions: Transaction[], startDate?: string, endDate?: string) => { if (!account) return 0; let balance = 0; const isDebitNormal = account.type === AccountType.ASSET || account.type === AccountType.EXPENSE; if (account.openingBalance) { balance += account.openingBalance; } transactions.forEach(t => { if (startDate && t.date < startDate) return; if (endDate && t.date > endDate) return; t.lines.forEach(line => { if (line.accountId === account.id) { if (isDebitNormal) { balance += (line.debit - line.credit); } else { balance += (line.credit - line.debit); } } }); }); return balance; };
 const getAccountTypeBalance = (transactions: Transaction[], accounts: Account[], type: AccountType, startDate?: string, endDate?: string) => { const typeAccounts = accounts.filter(a => a.type === type); let total = 0; typeAccounts.forEach(acc => { total += getAccountBalance(acc, transactions, startDate, endDate); }); return total; };
 
-// --- Quick Add Modal ---
 const QuickTransactionModal: React.FC<{ type: 'income' | 'expense' | 'sale' | 'purchase'; onClose: () => void }> = ({ type, onClose }) => {
-    const { accounts, addTransaction } = useStore();
+    const { accounts, addTransaction, settings } = useStore();
     const [amount, setAmount] = useState('');
     const [desc, setDesc] = useState('');
     const [targetAcc, setTargetAcc] = useState('');
     const [bankAcc, setBankAcc] = useState('');
+    const [currency, setCurrency] = useState(settings.currency);
+    const [exchangeRate, setExchangeRate] = useState(settings.exchangeRate || 1);
+    const [loadingRate, setLoadingRate] = useState(false);
+
+    useEffect(() => {
+        const updateRate = async () => {
+            if (currency === settings.currency) {
+                setExchangeRate(settings.exchangeRate || 1);
+            } else {
+                setLoadingRate(true);
+                const rate = await fetchUSDRate(currency);
+                setExchangeRate(rate);
+                setLoadingRate(false);
+            }
+        };
+        updateRate();
+    }, [currency, settings.currency, settings.exchangeRate]);
 
     const bankAccounts = accounts.filter(a => a.type === AccountType.ASSET && (a.name.toLowerCase().includes('bank') || a.name.toLowerCase().includes('cash')));
     const targetAccounts = accounts.filter(a => {
@@ -234,6 +267,8 @@ const QuickTransactionModal: React.FC<{ type: 'income' | 'expense' | 'sale' | 'p
         e.preventDefault();
         const amt = parseFloat(amount);
         if(!amt || !targetAcc || !bankAcc) return;
+
+        const baseAmount = amt / exchangeRate;
 
         let debitId = '', creditId = '';
         if(type === 'income' || type === 'sale') {
@@ -249,9 +284,11 @@ const QuickTransactionModal: React.FC<{ type: 'income' | 'expense' | 'sale' | 'p
             date: new Date().toISOString().split('T')[0],
             description: desc || `Quick ${type}`,
             lines: [
-                { accountId: debitId, debit: amt, credit: 0 },
-                { accountId: creditId, debit: 0, credit: amt }
-            ]
+                { accountId: debitId, debit: baseAmount, credit: 0 },
+                { accountId: creditId, debit: 0, credit: baseAmount }
+            ],
+            currency: currency,
+            exchangeRate: exchangeRate
         });
         onClose();
     };
@@ -267,6 +304,21 @@ const QuickTransactionModal: React.FC<{ type: 'income' | 'expense' | 'sale' | 'p
                     <button onClick={onClose}><X className="text-gray-400 hover:text-gray-600" /></button>
                 </div>
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                        <Select label="Currency" value={currency} onChange={e => setCurrency(e.target.value)}>
+                             {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.code}</option>)}
+                        </Select>
+                        <div className="relative">
+                            <Input 
+                                label={`Rate (1 USD = ? ${currency})`} 
+                                type="number" 
+                                step="0.0001" 
+                                value={exchangeRate} 
+                                onChange={e => setExchangeRate(parseFloat(e.target.value))} 
+                            />
+                            {loadingRate && <div className="absolute right-2 top-8"><Loader className="animate-spin text-blue-500" size={16}/></div>}
+                        </div>
+                    </div>
                     <Input label="Amount" type="number" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} required autoFocus placeholder="0.00" />
                     <Input label="Description" value={desc} onChange={e=>setDesc(e.target.value)} placeholder="e.g. Client Payment" />
                     <div>
@@ -301,7 +353,6 @@ const Dashboard: React.FC = () => {
   const totalIncome = getAccountTypeBalance(transactions, accounts, AccountType.INCOME);
   const totalExpenses = getAccountTypeBalance(transactions, accounts, AccountType.EXPENSE);
   const netProfit = totalIncome - totalExpenses;
-  const grossProfitMargin = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : 0;
   
   const cashAccount = accounts.find(a => a.name.toLowerCase().includes('cash'));
   const bankAccount = accounts.find(a => a.name.toLowerCase().includes('bank'));
@@ -415,41 +466,58 @@ const Dashboard: React.FC = () => {
             </button>
         </div>
 
-        <div className="bg-[#1E1B39] text-white rounded-[32px] p-8 relative overflow-hidden shadow-xl">
-           <div className="flex justify-between items-start mb-6">
-              <div>
-                <h3 className="text-lg font-medium text-gray-300 mb-1">Cash Flow</h3>
-                <div className="flex items-center gap-2">
-                   <div className="h-2 w-2 rounded-full bg-orange-400"></div>
-                   <span className="text-xs text-gray-400">Income</span>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-white dark:bg-slate-800 p-6 md:p-8 rounded-[32px] shadow-sm border border-gray-100 dark:border-slate-700">
+                <div className="flex justify-between items-start mb-6">
+                    <div>
+                        <p className="text-gray-500 dark:text-gray-400 font-medium mb-2">Total Income</p>
+                        <h2 className="text-3xl font-bold text-gray-800 dark:text-white">{formatCurrency(totalIncome, settings)}</h2>
+                    </div>
+                    <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-2xl text-green-600 dark:text-green-400">
+                        <TrendingUp size={24} />
+                    </div>
                 </div>
-                <h2 className="text-4xl font-bold mt-2">{formatCurrency(totalIncome, settings)}</h2>
-              </div>
-              <div className="text-right">
-                 <span className="bg-white/10 px-4 py-2 rounded-full text-sm font-medium">This week</span>
-              </div>
-           </div>
+                <div className="h-32 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={cashFlowData}>
+                            <defs>
+                                <linearGradient id="colorIncome" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#10B981" stopOpacity={0.2}/>
+                                    <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
+                                </linearGradient>
+                            </defs>
+                            <RechartsTooltip cursor={{stroke: '#10B981', strokeWidth: 1}} contentStyle={{backgroundColor: '#1E293B', border: 'none', borderRadius: '8px', color: '#fff'}} />
+                            <Area type="monotone" dataKey="income" stroke="#10B981" strokeWidth={3} fill="url(#colorIncome)" />
+                        </AreaChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
 
-           <div className="h-48 mt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                 <BarChart data={cashFlowData} barGap={8}>
-                    <RechartsTooltip cursor={{fill: 'transparent'}} content={({ active, payload }) => {
-                        if (active && payload && payload.length) {
-                        return (
-                            <div className="bg-slate-800 text-white text-xs p-2 rounded border border-slate-700">
-                                <p>{`${payload[0].payload.date}`}</p>
-                                <p className="text-orange-400">{`Income: ${payload[0].value.toFixed(2)}`}</p>
-                                <p className="text-slate-400">{`Exp: ${payload[1].value.toFixed(2)}`}</p>
-                            </div>
-                        );
-                        }
-                        return null;
-                    }} />
-                    <Bar dataKey="expense" fill="#4B4769" radius={[6, 6, 6, 6]} barSize={24} />
-                    <Bar dataKey="income" fill="#FBA94B" radius={[6, 6, 6, 6]} barSize={24} />
-                 </BarChart>
-              </ResponsiveContainer>
-           </div>
+            <div className="bg-white dark:bg-slate-800 p-6 md:p-8 rounded-[32px] shadow-sm border border-gray-100 dark:border-slate-700">
+                <div className="flex justify-between items-start mb-6">
+                    <div>
+                        <p className="text-gray-500 dark:text-gray-400 font-medium mb-2">Total Expenses</p>
+                        <h2 className="text-3xl font-bold text-gray-800 dark:text-white">{formatCurrency(totalExpenses, settings)}</h2>
+                    </div>
+                    <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-2xl text-red-600 dark:text-red-400">
+                        <TrendingUp size={24} className="transform rotate-180" />
+                    </div>
+                </div>
+                <div className="h-32 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={cashFlowData}>
+                            <defs>
+                                <linearGradient id="colorExpense" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#EF4444" stopOpacity={0.2}/>
+                                    <stop offset="95%" stopColor="#EF4444" stopOpacity={0}/>
+                                </linearGradient>
+                            </defs>
+                            <RechartsTooltip cursor={{stroke: '#EF4444', strokeWidth: 1}} contentStyle={{backgroundColor: '#1E293B', border: 'none', borderRadius: '8px', color: '#fff'}} />
+                            <Area type="monotone" dataKey="expense" stroke="#EF4444" strokeWidth={3} fill="url(#colorExpense)" />
+                        </AreaChart>
+                    </ResponsiveContainer>
+                </div>
+            </div>
         </div>
         
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -599,18 +667,16 @@ const Dashboard: React.FC = () => {
 };
 
 const Transactions: React.FC = () => {
-  const { transactions, accounts, addTransaction, deleteTransaction, settings, hasPermission } = useStore();
+  const { transactions, accounts, addTransaction, deleteTransaction, settings, currentUser } = useStore();
   const [newTransaction, setNewTransaction] = useState<Omit<Transaction, 'id'>>({
     date: new Date().toISOString().split('T')[0],
-    dueDate: '',
     description: '',
     lines: [
       { accountId: '', debit: 0, credit: 0 },
       { accountId: '', debit: 0, credit: 0 }
-    ],
-    contact: ''
+    ]
   });
-  const [error, setError] = useState('');
+  const isViewer = currentUser?.role === 'viewer';
 
   const handleLineChange = (index: number, field: keyof JournalEntryLine, value: any) => {
     const newLines = [...newTransaction.lines];
@@ -635,30 +701,17 @@ const Transactions: React.FC = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    
-    // Validation
     const totalDebit = newTransaction.lines.reduce((sum, line) => sum + Number(line.debit), 0);
     const totalCredit = newTransaction.lines.reduce((sum, line) => sum + Number(line.credit), 0);
     
     if (Math.abs(totalDebit - totalCredit) > 0.01) {
-      setError(`Debits (${totalDebit}) must equal Credits (${totalCredit})`);
+      alert(`Debits (${totalDebit}) must equal Credits (${totalCredit})`);
       return;
     }
     
     if (newTransaction.lines.some(l => !l.accountId)) {
-      setError("Please select an account for all lines");
+      alert("Please select an account for all lines");
       return;
-    }
-    
-    // If Liability used, check for due date for bill tracking
-    const liabilityUsed = newTransaction.lines.some(l => {
-       const acc = accounts.find(a => a.id === l.accountId);
-       return acc?.type === AccountType.LIABILITY && l.credit > 0;
-    });
-
-    if (liabilityUsed && !newTransaction.dueDate) {
-        if(!confirm("You are recording a liability (Payable) without a Due Date. Continue?")) return;
     }
 
     addTransaction({
@@ -669,34 +722,26 @@ const Transactions: React.FC = () => {
     
     setNewTransaction({
       date: new Date().toISOString().split('T')[0],
-      dueDate: '',
       description: '',
       lines: [
         { accountId: '', debit: 0, credit: 0 },
         { accountId: '', debit: 0, credit: 0 }
-      ],
-      contact: ''
+      ]
     });
   };
 
   return (
     <div className="space-y-6">
-      {hasPermission('manage_transactions') && (
+      {!isViewer && (
       <Card title="New Transaction">
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input 
               label="Date" 
               type="date" 
               value={newTransaction.date} 
               onChange={e => setNewTransaction({...newTransaction, date: e.target.value})} 
               required 
-            />
-            <Input 
-              label="Due Date (Optional)" 
-              type="date" 
-              value={newTransaction.dueDate} 
-              onChange={e => setNewTransaction({...newTransaction, dueDate: e.target.value})} 
             />
             <Input 
               label="Description" 
@@ -750,12 +795,9 @@ const Transactions: React.FC = () => {
                 )}
               </div>
             ))}
-            <div className="flex justify-between items-center">
-                <button type="button" onClick={addLine} className="text-sm text-blue-600 flex items-center gap-1 hover:underline">
-                    <Plus size={14} /> Add Line
-                </button>
-                {error && <span className="text-red-500 text-sm font-bold">{error}</span>}
-            </div>
+            <button type="button" onClick={addLine} className="text-sm text-blue-600 flex items-center gap-1 hover:underline">
+              <Plus size={14} /> Add Line
+            </button>
           </div>
 
           <div className="flex justify-end">
@@ -797,7 +839,7 @@ const Transactions: React.FC = () => {
                     </td>
                     <td className="px-4 py-3 text-right font-bold">{formatCurrency(total, settings)}</td>
                     <td className="px-4 py-3 text-center">
-                       {hasPermission('manage_transactions') && (
+                       {!isViewer && (
                        <button onClick={() => deleteTransaction(t.id)} className="text-red-500 hover:text-red-700">
                           <Trash2 size={16} />
                        </button>
@@ -806,6 +848,11 @@ const Transactions: React.FC = () => {
                   </tr>
                 );
               })}
+              {transactions.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-8 text-center text-gray-500">No transactions recorded yet.</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -815,7 +862,8 @@ const Transactions: React.FC = () => {
 };
 
 const ChartOfAccounts: React.FC = () => {
-  const { accounts, addAccount, updateAccount, deleteAccount, hasPermission } = useStore();
+  const { accounts, addAccount, updateAccount, deleteAccount, currentUser } = useStore();
+  const isViewer = currentUser?.role === 'viewer';
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<Account>>({});
 
@@ -827,12 +875,6 @@ const ChartOfAccounts: React.FC = () => {
   const handleSave = () => {
     if (!formData.code || !formData.name || !formData.type) return;
     
-    // Check for duplicate code
-    if (!editingId && accounts.some(a => a.code === formData.code)) {
-        alert("Account Code already exists!");
-        return;
-    }
-
     if (editingId) {
       updateAccount(formData as Account);
     } else {
@@ -846,9 +888,15 @@ const ChartOfAccounts: React.FC = () => {
     setFormData({});
   };
 
+  const handleDelete = (id: string) => {
+    if (window.confirm('Are you sure? This will delete the account.')) {
+      deleteAccount(id);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {hasPermission('manage_accounts') && (
+      {!isViewer && (
       <Card title={editingId ? "Edit Account" : "Add New Account"}>
          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
             <Input 
@@ -892,7 +940,7 @@ const ChartOfAccounts: React.FC = () => {
                  <th className="px-4 py-3">Name</th>
                  <th className="px-4 py-3">Type</th>
                  <th className="px-4 py-3">Opening Bal.</th>
-                 {hasPermission('manage_accounts') && <th className="px-4 py-3 text-right">Actions</th>}
+                 {!isViewer && <th className="px-4 py-3 text-right">Actions</th>}
                </tr>
              </thead>
              <tbody>
@@ -902,10 +950,10 @@ const ChartOfAccounts: React.FC = () => {
                     <td className="px-4 py-3 font-medium">{acc.name}</td>
                     <td className="px-4 py-3"><span className="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">{acc.type}</span></td>
                     <td className="px-4 py-3">{acc.openingBalance?.toFixed(2)}</td>
-                    {hasPermission('manage_accounts') && (
+                    {!isViewer && (
                     <td className="px-4 py-3 text-right">
                        <button onClick={() => handleEdit(acc)} className="text-blue-600 hover:text-blue-800 mr-3"><Edit2 size={16}/></button>
-                       <button onClick={() => deleteAccount(acc.id)} className="text-red-500 hover:text-red-700"><Trash2 size={16}/></button>
+                       <button onClick={() => handleDelete(acc.id)} className="text-red-500 hover:text-red-700"><Trash2 size={16}/></button>
                     </td>
                     )}
                  </tr>
@@ -919,190 +967,198 @@ const ChartOfAccounts: React.FC = () => {
 };
 
 const FinancialStatements: React.FC<{ type: 'trial' | 'income' | 'balance' }> = ({ type }) => {
-  const { accounts, transactions, settings, updateSettings, hasPermission } = useStore();
-  const [showConfig, setShowConfig] = useState(false);
+  const { accounts, transactions, settings } = useStore();
   
-  if (!hasPermission('view_reports')) return <div className="p-4 text-center">Access Denied</div>;
-
   const reportData = useMemo(() => {
      if (type === 'trial') {
         return accounts.map(acc => {
            const bal = getAccountBalance(acc, transactions);
+           
            let debit = 0; 
            let credit = 0;
+           
            const normalDebit = (acc.type === AccountType.ASSET || acc.type === AccountType.EXPENSE);
            if (normalDebit) {
                if(bal >= 0) debit = bal; else credit = -bal;
            } else {
                if(bal >= 0) credit = bal; else debit = -bal;
            }
+           
            return { ...acc, debit, credit };
-        }).filter(a => settings.reportConfig.showZeroBalance ? true : (a.debit !== 0 || a.credit !== 0));
+        }).filter(a => a.debit !== 0 || a.credit !== 0);
      } else if (type === 'income') {
-        const income = accounts.filter(a => a.type === AccountType.INCOME).map(a => ({ ...a, balance: getAccountBalance(a, transactions) })).filter(a => settings.reportConfig.showZeroBalance || a.balance !== 0);
-        const expense = accounts.filter(a => a.type === AccountType.EXPENSE).map(a => ({ ...a, balance: getAccountBalance(a, transactions) })).filter(a => settings.reportConfig.showZeroBalance || a.balance !== 0);
+        const income = accounts.filter(a => a.type === AccountType.INCOME).map(a => ({ ...a, balance: getAccountBalance(a, transactions) }));
+        const expense = accounts.filter(a => a.type === AccountType.EXPENSE).map(a => ({ ...a, balance: getAccountBalance(a, transactions) }));
         return { income, expense };
      } else {
-        const assets = accounts.filter(a => a.type === AccountType.ASSET).map(a => ({ ...a, balance: getAccountBalance(a, transactions) })).filter(a => settings.reportConfig.showZeroBalance || a.balance !== 0);
-        const liabilities = accounts.filter(a => a.type === AccountType.LIABILITY).map(a => ({ ...a, balance: getAccountBalance(a, transactions) })).filter(a => settings.reportConfig.showZeroBalance || a.balance !== 0);
-        const equity = accounts.filter(a => a.type === AccountType.EQUITY).map(a => ({ ...a, balance: getAccountBalance(a, transactions) })).filter(a => settings.reportConfig.showZeroBalance || a.balance !== 0);
+        // Balance Sheet
+        const assets = accounts.filter(a => a.type === AccountType.ASSET).map(a => ({ ...a, balance: getAccountBalance(a, transactions) }));
+        const liabilities = accounts.filter(a => a.type === AccountType.LIABILITY).map(a => ({ ...a, balance: getAccountBalance(a, transactions) }));
+        const equity = accounts.filter(a => a.type === AccountType.EQUITY).map(a => ({ ...a, balance: getAccountBalance(a, transactions) }));
         
+        // Calculate Net Income to add to Equity
         const totalIncome = getAccountTypeBalance(transactions, accounts, AccountType.INCOME);
         const totalExpense = getAccountTypeBalance(transactions, accounts, AccountType.EXPENSE);
         const netIncome = totalIncome - totalExpense;
 
         return { assets, liabilities, equity, netIncome };
      }
-  }, [type, accounts, transactions, settings.reportConfig]);
+  }, [type, accounts, transactions]);
 
-  const toggleConfig = () => setShowConfig(!showConfig);
-  const { reportConfig } = settings;
+  if (type === 'trial') {
+     const data = reportData as any[];
+     const totalDebit = data.reduce((s, a) => s + a.debit, 0);
+     const totalCredit = data.reduce((s, a) => s + a.credit, 0);
+     
+     return (
+        <Card title="Trial Balance">
+           <table className="w-full text-sm">
+              <thead className="bg-gray-100 dark:bg-slate-700 font-bold">
+                 <tr>
+                    <th className="px-4 py-2 text-left">Account</th>
+                    <th className="px-4 py-2 text-right">Debit</th>
+                    <th className="px-4 py-2 text-right">Credit</th>
+                 </tr>
+              </thead>
+              <tbody>
+                 {data.map(d => (
+                    <tr key={d.id} className="border-b dark:border-slate-700">
+                       <td className="px-4 py-2">{d.code} - {d.name}</td>
+                       <td className="px-4 py-2 text-right">{d.debit ? formatCurrency(d.debit, settings) : '-'}</td>
+                       <td className="px-4 py-2 text-right">{d.credit ? formatCurrency(d.credit, settings) : '-'}</td>
+                    </tr>
+                 ))}
+                 <tr className="font-bold bg-gray-50 dark:bg-slate-700">
+                    <td className="px-4 py-3">Total</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(totalDebit, settings)}</td>
+                    <td className="px-4 py-3 text-right">{formatCurrency(totalCredit, settings)}</td>
+                 </tr>
+              </tbody>
+           </table>
+        </Card>
+     );
+  } else if (type === 'income') {
+     const { income, expense } = reportData as any;
+     const totalIncome = income.reduce((s:number, a:any) => s + a.balance, 0);
+     const totalExpense = expense.reduce((s:number, a:any) => s + a.balance, 0);
+     
+     return (
+        <Card title="Income Statement (Profit & Loss)">
+           <div className="space-y-6">
+              <div>
+                 <h4 className="font-bold text-lg mb-2 text-green-600">Revenue</h4>
+                 {income.map((a:any) => (
+                    <div key={a.id as string} className="flex justify-between py-1 border-b border-gray-100 dark:border-slate-700">
+                       <span>{a.name}</span>
+                       <span>{formatCurrency(a.balance, settings)}</span>
+                    </div>
+                 ))}
+                 <div className="flex justify-between font-bold mt-2 pt-2 border-t">
+                    <span>Total Revenue</span>
+                    <span>{formatCurrency(totalIncome, settings)}</span>
+                 </div>
+              </div>
+              
+              <div>
+                 <h4 className="font-bold text-lg mb-2 text-red-600">Expenses</h4>
+                 {expense.map((a:any) => (
+                    <div key={a.id as string} className="flex justify-between py-1 border-b border-gray-100 dark:border-slate-700">
+                       <span>{a.name}</span>
+                       <span>{formatCurrency(a.balance, settings)}</span>
+                    </div>
+                 ))}
+                 <div className="flex justify-between font-bold mt-2 pt-2 border-t">
+                    <span>Total Expenses</span>
+                    <span>{formatCurrency(totalExpense, settings)}</span>
+                 </div>
+              </div>
 
-  return (
-    <div className="space-y-4">
-        <div className="flex justify-end">
-            <Button onClick={toggleConfig} variant="secondary" className="flex items-center gap-2 text-xs">
-                <Filter size={16}/> Customize Report
-            </Button>
-        </div>
+              <div className="bg-blue-50 dark:bg-slate-700 p-4 rounded-lg flex justify-between items-center text-xl font-bold">
+                 <span>Net Income</span>
+                 <span className={totalIncome - totalExpense >= 0 ? "text-green-600" : "text-red-600"}>
+                    {formatCurrency(totalIncome - totalExpense, settings)}
+                 </span>
+              </div>
+           </div>
+        </Card>
+     );
+  } else {
+      const { assets, liabilities, equity, netIncome } = reportData as any;
+      const totalAssets = assets.reduce((s:number, a:any) => s + a.balance, 0);
+      const totalLiabilities = liabilities.reduce((s:number, a:any) => s + a.balance, 0);
+      const totalEquity = equity.reduce((s:number, a:any) => s + a.balance, 0) + netIncome;
 
-        {showConfig && (
-            <div className="bg-gray-100 dark:bg-slate-700 p-4 rounded-lg mb-4 grid grid-cols-2 gap-4">
-                <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={reportConfig.showZeroBalance} onChange={e => updateSettings({...settings, reportConfig: {...reportConfig, showZeroBalance: e.target.checked}})} />
-                    Show Zero Balance Accounts
-                </label>
-                <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={reportConfig.showAccountCodes} onChange={e => updateSettings({...settings, reportConfig: {...reportConfig, showAccountCodes: e.target.checked}})} />
-                    Show Account Codes
-                </label>
-                <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={reportConfig.compactView} onChange={e => updateSettings({...settings, reportConfig: {...reportConfig, compactView: e.target.checked}})} />
-                    Compact View
-                </label>
-                <Input label="Footer Text" value={reportConfig.footerText || ''} onChange={e => updateSettings({...settings, reportConfig: {...reportConfig, footerText: e.target.value}})} />
-            </div>
-        )}
+      return (
+        <Card title="Balance Sheet">
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div>
+                 <h4 className="font-bold text-lg mb-4 text-blue-600 border-b pb-2">Assets</h4>
+                 {assets.map((a:any) => (
+                    <div key={a.id as string} className="flex justify-between py-1 text-sm">
+                       <span>{a.name}</span>
+                       <span>{formatCurrency(a.balance, settings)}</span>
+                    </div>
+                 ))}
+                 <div className="flex justify-between font-bold mt-4 pt-2 border-t text-lg">
+                    <span>Total Assets</span>
+                    <span>{formatCurrency(totalAssets, settings)}</span>
+                 </div>
+              </div>
+              
+              <div className="space-y-8">
+                 <div>
+                    <h4 className="font-bold text-lg mb-4 text-red-600 border-b pb-2">Liabilities</h4>
+                    {liabilities.map((a:any) => (
+                        <div key={a.id as string} className="flex justify-between py-1 text-sm">
+                        <span>{a.name}</span>
+                        <span>{formatCurrency(a.balance, settings)}</span>
+                        </div>
+                    ))}
+                    <div className="flex justify-between font-bold mt-2 pt-2 border-t">
+                        <span>Total Liabilities</span>
+                        <span>{formatCurrency(totalLiabilities, settings)}</span>
+                    </div>
+                 </div>
 
-        <div className="bg-white dark:bg-slate-800 p-8 rounded-lg shadow print-section">
-            {/* Report Header with Logo */}
-            <div className="text-center mb-8 border-b pb-4">
-                {settings.companyLogo && <img src={settings.companyLogo} alt="Logo" className="h-16 mx-auto mb-2" />}
-                <h2 className="text-2xl font-bold">{settings.companyName}</h2>
-                <h3 className="text-xl text-gray-500 uppercase tracking-widest mt-1">
-                    {type === 'trial' ? 'Trial Balance' : type === 'income' ? 'Income Statement' : 'Balance Sheet'}
-                </h3>
-                <p className="text-sm text-gray-400 mt-2">{new Date().toLocaleDateString()}</p>
-            </div>
-
-            <div className={reportConfig.compactView ? 'text-xs' : 'text-sm'}>
-               {/* Rendering Logic matches previous but uses data from memoized reportData */}
-               {type === 'trial' && (
-                  <table className="w-full">
-                      <thead className="border-b-2 border-gray-800 dark:border-gray-200 font-bold">
-                          <tr>
-                              <th className="text-left py-2">Account</th>
-                              <th className="text-right py-2">Debit</th>
-                              <th className="text-right py-2">Credit</th>
-                          </tr>
-                      </thead>
-                      <tbody>
-                          {(reportData as any[]).map(d => (
-                              <tr key={d.id} className="border-b border-gray-100 dark:border-slate-700">
-                                  <td className="py-2">{reportConfig.showAccountCodes ? `${d.code} - ` : ''}{d.name}</td>
-                                  <td className="text-right">{d.debit ? formatCurrency(d.debit, settings) : '-'}</td>
-                                  <td className="text-right">{d.credit ? formatCurrency(d.credit, settings) : '-'}</td>
-                              </tr>
-                          ))}
-                          <tr className="font-bold border-t-2 border-gray-800">
-                              <td className="py-2">Total</td>
-                              <td className="text-right">{(reportData as any[]).reduce((s,a)=>s+a.debit,0).toFixed(2)}</td>
-                              <td className="text-right">{(reportData as any[]).reduce((s,a)=>s+a.credit,0).toFixed(2)}</td>
-                          </tr>
-                      </tbody>
-                  </table>
-               )}
-
-               {type === 'income' && (
-                   <div className="space-y-6">
-                       <div>
-                           <h4 className="font-bold text-lg text-green-600 border-b mb-2">Revenue</h4>
-                           {(reportData as any).income.map((a:any) => (
-                               <div key={a.id} className="flex justify-between py-1 border-b border-gray-50">
-                                   <span>{reportConfig.showAccountCodes ? `${a.code} - ` : ''}{a.name}</span>
-                                   <span>{formatCurrency(a.balance, settings)}</span>
-                               </div>
-                           ))}
-                       </div>
-                       <div>
-                           <h4 className="font-bold text-lg text-red-600 border-b mb-2">Expenses</h4>
-                           {(reportData as any).expense.map((a:any) => (
-                               <div key={a.id} className="flex justify-between py-1 border-b border-gray-50">
-                                   <span>{reportConfig.showAccountCodes ? `${a.code} - ` : ''}{a.name}</span>
-                                   <span>{formatCurrency(a.balance, settings)}</span>
-                               </div>
-                           ))}
-                       </div>
-                       <div className="flex justify-between items-center text-xl font-bold pt-4 border-t-2 border-black">
-                           <span>Net Income</span>
-                           <span>{formatCurrency((reportData as any).income.reduce((s:number,a:any)=>s+a.balance,0) - (reportData as any).expense.reduce((s:number,a:any)=>s+a.balance,0), settings)}</span>
-                       </div>
-                   </div>
-               )}
-
-               {type === 'balance' && (
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                       <div>
-                           <h4 className="font-bold text-lg text-blue-600 border-b mb-2">Assets</h4>
-                           {(reportData as any).assets.map((a:any) => (
-                               <div key={a.id} className="flex justify-between py-1 border-b border-gray-50">
-                                   <span>{reportConfig.showAccountCodes ? `${a.code} - ` : ''}{a.name}</span>
-                                   <span>{formatCurrency(a.balance, settings)}</span>
-                               </div>
-                           ))}
-                           <div className="font-bold mt-2 flex justify-between">
-                               <span>Total Assets</span>
-                               <span>{formatCurrency((reportData as any).assets.reduce((s:number,a:any)=>s+a.balance,0), settings)}</span>
-                           </div>
-                       </div>
-                       <div>
-                           <h4 className="font-bold text-lg text-red-600 border-b mb-2">Liabilities</h4>
-                           {(reportData as any).liabilities.map((a:any) => (
-                               <div key={a.id} className="flex justify-between py-1 border-b border-gray-50">
-                                   <span>{reportConfig.showAccountCodes ? `${a.code} - ` : ''}{a.name}</span>
-                                   <span>{formatCurrency(a.balance, settings)}</span>
-                               </div>
-                           ))}
-                           
-                           <h4 className="font-bold text-lg text-purple-600 border-b mb-2 mt-6">Equity</h4>
-                           {(reportData as any).equity.map((a:any) => (
-                               <div key={a.id} className="flex justify-between py-1 border-b border-gray-50">
-                                   <span>{reportConfig.showAccountCodes ? `${a.code} - ` : ''}{a.name}</span>
-                                   <span>{formatCurrency(a.balance, settings)}</span>
-                               </div>
-                           ))}
-                           <div className="flex justify-between py-1 text-green-600 font-bold">
-                               <span>Net Income</span>
-                               <span>{formatCurrency((reportData as any).netIncome, settings)}</span>
-                           </div>
-                       </div>
-                   </div>
-               )}
-            </div>
-            
-            <div className="mt-8 pt-4 border-t text-center text-xs text-gray-400">
-                {reportConfig.footerText}
-            </div>
-        </div>
-    </div>
-  );
+                 <div>
+                    <h4 className="font-bold text-lg mb-4 text-purple-600 border-b pb-2">Equity</h4>
+                    {equity.map((a:any) => (
+                        <div key={a.id as string} className="flex justify-between py-1 text-sm">
+                        <span>{a.name}</span>
+                        <span>{formatCurrency(a.balance, settings)}</span>
+                        </div>
+                    ))}
+                    <div className="flex justify-between py-1 text-sm text-green-600">
+                       <span>Net Income (Current Period)</span>
+                       <span>{formatCurrency(netIncome, settings)}</span>
+                    </div>
+                    <div className="flex justify-between font-bold mt-2 pt-2 border-t">
+                        <span>Total Equity</span>
+                        <span>{formatCurrency(totalEquity, settings)}</span>
+                    </div>
+                 </div>
+                 
+                 <div className="bg-gray-100 dark:bg-slate-700 p-3 rounded font-bold flex justify-between">
+                     <span>Total Liabilities & Equity</span>
+                     <span>{formatCurrency(totalLiabilities + totalEquity, settings)}</span>
+                 </div>
+              </div>
+           </div>
+        </Card>
+      );
+  }
 };
 
 const SettingsPage: React.FC = () => {
-  const { settings, updateSettings, users, updateUser, hasPermission } = useStore();
+  const { settings, updateSettings, users, updateUser, resetData, restoreData, saveToCloud, loadFromCloud, isSyncing, currentUser, forceGoogleSheetSync, syncStatus, hasPermission } = useStore();
+  const isViewer = currentUser?.role === 'viewer';
+  const [file, setFile] = useState<File | null>(null);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<'general' | 'users' | 'backup'>('general');
+  const [loadingRate, setLoadingRate] = useState(false);
+  const [gLoading, setGLoading] = useState(false);
+  const [cloudMsg, setCloudMsg] = useState('');
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -1129,6 +1185,78 @@ const SettingsPage: React.FC = () => {
       }
   };
 
+  const fetchExchangeRate = async (currency: string) => {
+    if (currency === 'USD') return 1;
+    setLoadingRate(true);
+    try {
+        const response = await fetch(`https://open.er-api.com/v6/latest/USD`);
+        const data = await response.json();
+        return data.rates[currency] || 1;
+    } finally {
+        setLoadingRate(false);
+    }
+  };
+
+  const handleCurrencyChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const newCurrency = e.target.value;
+      const c = CURRENCIES.find(c => c.code === newCurrency);
+      let newRate = settings.exchangeRate;
+      const rate = await fetchExchangeRate(newCurrency);
+      newRate = rate;
+      updateSettings({
+          ...settings, 
+          currency: newCurrency, 
+          currencySign: c?.sign || '$', 
+          exchangeRate: newRate
+      });
+  };
+
+  const initGapi = async () => {
+    if (!settings.googleClientId || !settings.googleApiKey) {
+        alert('Please enter your Google Client ID and API Key first.');
+        return false;
+    }
+    return new Promise((resolve, reject) => {
+        gapi.load('client:auth2', async () => {
+            try {
+                await gapi.client.init({
+                    apiKey: settings.googleApiKey,
+                    clientId: settings.googleClientId,
+                    discoveryDocs: [
+                        "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest",
+                        "https://sheets.googleapis.com/$discovery/rest?version=v4"
+                    ],
+                    scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets'
+                });
+                resolve(true);
+            } catch (error) {
+                console.error("GAPI Init Error", error);
+                alert("Google API Initialization failed. Check console for details.");
+                resolve(false);
+            }
+        });
+    });
+  };
+
+  const handleGoogleSignIn = async () => {
+      setGLoading(true);
+      const initialized = await initGapi();
+      if (!initialized) { setGLoading(false); return; }
+      const authInstance = gapi.auth2.getAuthInstance();
+      if (!authInstance.isSignedIn.get()) {
+          try {
+            await authInstance.signIn();
+            alert("Signed in successfully. You can now use Google Drive and Sheets integration.");
+          } catch(e) {
+              console.error(e);
+              alert("Sign in failed");
+          }
+      } else {
+          alert("Already signed in.");
+      }
+      setGLoading(false);
+  };
+
   if (!hasPermission('manage_settings')) return <div className="p-4">Access Denied</div>;
 
   return (
@@ -1142,17 +1270,26 @@ const SettingsPage: React.FC = () => {
       {activeTab === 'general' && (
       <Card title="General Configuration">
          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <Input label="Company Name" value={settings.companyName} onChange={e => updateSettings({...settings, companyName: e.target.value})} />
-            
+            <Input label="Company Name" value={settings.companyName} onChange={e => updateSettings({...settings, companyName: e.target.value})} disabled={isViewer} />
             <div className="space-y-2">
                 <label className="block text-sm font-medium">Company Logo</label>
                 <input type="file" accept="image/*" onChange={handleLogoUpload} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-violet-50 file:text-violet-700 hover:file:bg-violet-100"/>
                 {settings.companyLogo && <img src={settings.companyLogo} alt="Logo" className="h-12 mt-2" />}
             </div>
-
-            <Select label="Currency" value={settings.currency} onChange={e => updateSettings({...settings, currency: e.target.value})}>
+            <Select label="Currency" value={settings.currency} onChange={handleCurrencyChange} disabled={isViewer}>
                {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.name} ({c.sign})</option>)}
             </Select>
+            <div className="col-span-2 md:col-span-1 relative">
+                <Input 
+                    label={`Exchange Rate (1 USD = ? ${settings.currency})`} 
+                    type="number" 
+                    step="0.01"
+                    value={settings.exchangeRate || 1} 
+                    onChange={e => updateSettings({...settings, exchangeRate: parseFloat(e.target.value)})} 
+                    disabled={isViewer || settings.currency === 'USD'} 
+                />
+                {loadingRate && <div className="absolute right-3 top-9"><Loader className="animate-spin text-blue-500" size={16}/></div>}
+            </div>
             <div className="flex flex-col gap-2">
                 <label className="flex items-center gap-2">
                     <input type="checkbox" checked={settings.emailNotifications} onChange={e => updateSettings({...settings, emailNotifications: e.target.checked})} />
@@ -1211,8 +1348,76 @@ const SettingsPage: React.FC = () => {
       )}
 
       {activeTab === 'backup' && (
-          <div className="p-4 bg-yellow-50 dark:bg-slate-800 rounded">
-              <p>Backup controls are available in the dashboard sidebar or top menu depending on layout.</p>
+          <div className="space-y-6">
+              <Card title="Google Sheets Integration">
+                  <div className="space-y-4">
+                      <p className="text-sm text-gray-500">Automatically sync your data to a Google Sheet. You must provide a Client ID and API Key, and sign in with a Google Account that has edit access to the sheet.</p>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <Input label="Google Client ID" value={settings.googleClientId || ''} onChange={e => updateSettings({...settings, googleClientId: e.target.value})} />
+                          <Input label="Google API Key" value={settings.googleApiKey || ''} onChange={e => updateSettings({...settings, googleApiKey: e.target.value})} />
+                      </div>
+                      
+                      <Button onClick={handleGoogleSignIn} disabled={gLoading} variant="secondary" className="flex items-center gap-2">
+                          {gLoading ? <Loader className="animate-spin" size={16}/> : <LogIn size={16}/>} Sign In with Google
+                      </Button>
+
+                      <div className="border-t pt-4 mt-4">
+                          <Input label="Spreadsheet ID" value={settings.googleSheetId || ''} onChange={e => updateSettings({...settings, googleSheetId: e.target.value})} />
+                          <p className="text-xs text-gray-400 mb-4">Extract from URL: docs.google.com/spreadsheets/d/<strong>ID</strong>/edit</p>
+                          
+                          <div className="flex items-center gap-4">
+                              <label className="flex items-center gap-2">
+                                  <input type="checkbox" checked={settings.enableSheetSync} onChange={e => updateSettings({...settings, enableSheetSync: e.target.checked})} />
+                                  Enable Automatic Sync
+                              </label>
+                              <Button onClick={() => forceGoogleSheetSync()} disabled={!settings.googleSheetId || !settings.enableSheetSync} className="flex items-center gap-2">
+                                  <FileSpreadsheet size={16}/> Sync Now
+                              </Button>
+                          </div>
+                          {syncStatus && <p className="text-sm text-blue-600 mt-2">{syncStatus}</p>}
+                      </div>
+                  </div>
+              </Card>
+
+              <Card title="Cloud Backup (Google Drive)">
+                  <div className="flex gap-4">
+                      {/* Note: Drive export logic is handled within the Google integration flow above generally, simplifying here */}
+                      <p className="text-gray-500 text-sm">Use the "Sign In" above to enable Drive features.</p>
+                  </div>
+              </Card>
+
+              <Card title="Local Data">
+                  <div className="flex gap-4">
+                      <Button onClick={() => {
+                          const data = localStorage.getItem('proAccountingData');
+                          if (!data) return;
+                          const blob = new Blob([data], { type: 'application/json' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `backup-${new Date().toISOString().split('T')[0]}.json`;
+                          a.click();
+                      }} variant="secondary" className="flex items-center gap-2"><Download size={16}/> Export JSON</Button>
+                      
+                      <div className="flex items-center gap-2">
+                          <input type="file" accept=".json" onChange={e => setFile(e.target.files?.[0] || null)} className="text-sm text-gray-500" />
+                          <Button onClick={async () => {
+                              if (!file) return;
+                              const text = await file.text();
+                              if (restoreData(text)) {
+                                  alert('Data restored successfully!');
+                                  window.location.reload();
+                              } else {
+                                  alert('Invalid backup file');
+                              }
+                          }} disabled={!file} variant="secondary">Restore</Button>
+                      </div>
+                  </div>
+                  <div className="pt-4 border-t mt-4">
+                      <Button onClick={() => {if(confirm('Reset all data?')) resetData()}} variant="danger">Reset All Data</Button>
+                  </div>
+              </Card>
           </div>
       )}
     </div>
@@ -1259,8 +1464,14 @@ const AppContent: React.FC = () => {
                     
                     {!collapsed && <div className="pt-4 pb-2 px-4 text-xs font-semibold text-slate-500 uppercase">Reports</div>}
                     
+                    <Link to="/reports/trial-balance" className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors ${isActive('/reports/trial-balance') ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+                        <PieChart size={20} /> {!collapsed && "Trial Balance"}
+                    </Link>
                     <Link to="/reports/income" className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors ${isActive('/reports/income') ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-                        <PieChart size={20} /> {!collapsed && "Financial Reports"}
+                        <PieChart size={20} /> {!collapsed && "Income Statement"}
+                    </Link>
+                    <Link to="/reports/balance" className={`flex items-center gap-3 px-4 py-3 rounded-md transition-colors ${isActive('/reports/balance') ? 'bg-blue-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+                        <PieChart size={20} /> {!collapsed && "Balance Sheet"}
                     </Link>
 
                     {!collapsed && <div className="pt-4 pb-2 px-4 text-xs font-semibold text-slate-500 uppercase">System</div>}

@@ -1,7 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { Account, Transaction, AppSettings, User, AccountType, Permission, Notification } from '../types';
 import { INITIAL_ACCOUNTS, INITIAL_SETTINGS, INITIAL_USERS, ADMIN_PERMISSIONS, VIEWER_PERMISSIONS } from '../constants';
 import { createClient } from '@supabase/supabase-js';
+
+declare const gapi: any;
 
 interface StoreContextType {
   accounts: Account[];
@@ -10,6 +12,7 @@ interface StoreContextType {
   users: User[];
   currentUser: User | null;
   notifications: Notification[];
+  syncStatus: string;
   setCurrentUser: (user: User) => void;
   addAccount: (account: Account) => void;
   updateAccount: (account: Account) => void;
@@ -31,6 +34,7 @@ interface StoreContextType {
   hasPermission: (permission: Permission) => boolean;
   markNotificationRead: (id: string) => void;
   generateNotifications: () => void;
+  forceGoogleSheetSync: () => Promise<void>;
 }
 
 const StoreContext = createContext<StoreContextType | undefined>(undefined);
@@ -43,6 +47,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [currentUser, setCurrentUser] = useState<User | null>(INITIAL_USERS[0]);
   const [isSyncing, setIsSyncing] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [syncStatus, setSyncStatus] = useState('');
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Load from local storage on mount
   useEffect(() => {
@@ -54,7 +60,6 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         if (parsed.transactions) setTransactions(parsed.transactions);
         if (parsed.settings) setSettings({ ...INITIAL_SETTINGS, ...parsed.settings });
         if (parsed.users) {
-           // Migration for permissions
            const updatedUsers = parsed.users.map((u: User) => ({
              ...u,
              permissions: u.permissions || (u.role === 'admin' ? ADMIN_PERMISSIONS : VIEWER_PERMISSIONS)
@@ -79,6 +84,116 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       document.documentElement.classList.remove('dark');
     }
   }, [accounts, transactions, settings, users]);
+
+  // Google Sheets Auto-Sync Logic
+  const syncToGoogleSheet = useCallback(async () => {
+    if (!settings.enableSheetSync || !settings.googleSheetId) return;
+    if (typeof gapi === 'undefined' || !gapi.client || !gapi.client.sheets) {
+        setSyncStatus('Google API not ready');
+        return;
+    }
+
+    const authInstance = gapi.auth2?.getAuthInstance();
+    if (!authInstance?.isSignedIn.get()) {
+        setSyncStatus('Not signed in to Google');
+        return;
+    }
+
+    setSyncStatus('Syncing to Sheets...');
+    try {
+        const spreadsheetId = settings.googleSheetId;
+
+        // Prepare Data Arrays
+        // Sheet 1: Transactions
+        const txHeader = ['ID', 'Date', 'Description', 'Total Amount', 'Currency', 'Exchange Rate', 'Account', 'Debit', 'Credit'];
+        const txData = transactions.flatMap(t => {
+            const total = t.lines.reduce((s, l) => s + l.debit, 0);
+            return t.lines.map(l => {
+                const acc = accounts.find(a => a.id === l.accountId);
+                return [
+                    t.id, 
+                    t.date, 
+                    t.description, 
+                    total, 
+                    t.currency || 'USD', 
+                    t.exchangeRate || 1, 
+                    acc ? `${acc.code} - ${acc.name}` : l.accountId, 
+                    l.debit, 
+                    l.credit
+                ];
+            });
+        });
+
+        // Sheet 2: Accounts
+        const accHeader = ['ID', 'Code', 'Name', 'Type', 'Opening Balance', 'Current Balance (Calc)'];
+        const accData = accounts.map(a => {
+            let balance = a.openingBalance || 0;
+            const isDebitNormal = a.type === AccountType.ASSET || a.type === AccountType.EXPENSE;
+            transactions.forEach(t => {
+                t.lines.forEach(l => {
+                    if (l.accountId === a.id) {
+                        balance += isDebitNormal ? (l.debit - l.credit) : (l.credit - l.debit);
+                    }
+                });
+            });
+            return [a.id, a.code, a.name, a.type, a.openingBalance || 0, balance];
+        });
+
+        const bodyTx = { values: [txHeader, ...txData] };
+        const bodyAcc = { values: [accHeader, ...accData] };
+
+        await gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: 'Transactions!A1', 
+            valueInputOption: 'USER_ENTERED',
+            resource: bodyTx
+        }).then(null, async (err: any) => {
+            if (err.result && err.result.error && err.result.error.code === 400) {
+                 await gapi.client.sheets.spreadsheets.values.update({
+                    spreadsheetId,
+                    range: 'Sheet1!A1',
+                    valueInputOption: 'USER_ENTERED',
+                    resource: bodyTx
+                });
+            } else {
+                throw err;
+            }
+        });
+
+        try {
+             await gapi.client.sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range: 'Accounts!A1',
+                valueInputOption: 'USER_ENTERED',
+                resource: bodyAcc
+            });
+        } catch (e) {
+            console.warn("Could not write Accounts sheet. Make sure a sheet named 'Accounts' exists.");
+        }
+
+        setSyncStatus(`Synced at ${new Date().toLocaleTimeString()}`);
+    } catch (error: any) {
+        console.error("Sheet Sync Error", error);
+        setSyncStatus('Sync Failed: ' + (error.result?.error?.message || error.message));
+    }
+  }, [accounts, transactions, settings.googleSheetId, settings.enableSheetSync]);
+
+  // Debounced Sync Effect
+  useEffect(() => {
+      if (settings.enableSheetSync) {
+          if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+          setSyncStatus('Waiting to sync...');
+          syncTimeoutRef.current = setTimeout(() => {
+              syncToGoogleSheet();
+          }, 5000); // 5 second debounce
+      } else {
+          setSyncStatus('');
+      }
+      return () => {
+          if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+      }
+  }, [transactions, accounts, settings.enableSheetSync, syncToGoogleSheet]);
+
 
   // Notifications Logic
   const generateNotifications = useCallback(() => {
@@ -281,13 +396,11 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   };
 
   const loadDemoData = () => {
-    // Demo data implementation (same as before but ensures types match)
     const demoAccounts = [...INITIAL_ACCOUNTS];
     const getAccId = (namePart: string) => demoAccounts.find(a => a.name.toLowerCase().includes(namePart.toLowerCase()))?.id || '';
     const bankId = getAccId('Bank');
     const equityId = getAccId('Owner\'s Equity');
     
-    // Minimal demo set for brevity
     const transactions: Transaction[] = [];
     transactions.push({
         id: `demo-init-${Date.now()}`,
@@ -352,6 +465,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       users,
       currentUser,
       notifications,
+      syncStatus,
       setCurrentUser,
       addAccount,
       updateAccount,
@@ -372,7 +486,8 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       isSyncing,
       hasPermission,
       markNotificationRead,
-      generateNotifications
+      generateNotifications,
+      forceGoogleSheetSync: syncToGoogleSheet
     }}>
       {children}
     </StoreContext.Provider>

@@ -30,6 +30,8 @@ export interface Transaction {
   description: string;
   lines: JournalEntryLine[];
   contact?: string;
+  currency?: string;
+  exchangeRate?: number;
 }
 
 export interface User {
@@ -38,7 +40,7 @@ export interface User {
   email: string;
   mobile?: string;
   address?: string;
-  role: 'admin' | 'viewer' | 'editor'; 
+  role: 'admin' | 'viewer' | 'editor'; // Kept for backward compatibility
   permissions: Permission[];
 }
 
@@ -73,6 +75,8 @@ export interface AppSettings {
   lowStockThreshold?: number;
   emailNotifications?: boolean;
   notificationEmail?: string;
+  googleSheetId?: string;
+  enableSheetSync?: boolean;
 }
 
 export interface FinancialSummary {
