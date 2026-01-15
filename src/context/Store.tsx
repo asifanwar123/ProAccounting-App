@@ -278,7 +278,7 @@ export const StoreProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     setAccounts(demoAccounts);
     setTransactions(demoTransactions);
-    setSettings({ ...INITIAL_SETTINGS, companyName: "Demo Corp Inc.", plan: 'pro' });
+    setSettings({ ...INITIAL_SETTINGS, companyName: "ACC Services", plan: 'pro' });
   };
 
   const addAccount = (account: Account) => setAccounts([...accounts, account]);

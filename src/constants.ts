@@ -25,7 +25,7 @@ export const INITIAL_SETTINGS: AppSettings = {
   currencySign: '$',
   showCurrencySign: true,
   theme: 'light',
-  companyName: 'My Company',
+  companyName: 'ACC Services',
   taxRate: 0,
   exchangeRate: 1,
   plan: 'free',
